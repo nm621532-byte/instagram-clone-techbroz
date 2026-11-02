@@ -2,13 +2,15 @@
 // Not affiliated with Instagram or Meta. Zero dependencies: only Node.js built-ins (Node 18+).
 // v1.1: settings + privacy (private account, follow requests, close friends, block/restrict/mute,
 // message requests, hidden words, comment controls, read receipts, sessions, data export, admin panel).
+// v1.2: admin boosts create real-looking bot accounts (followers / likes / comments lists fill with names),
+// paginated followers + "liked by" lists, admin Bots tab. Bots live only inside this app and cannot log in.
 'use strict';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 const APP_NAME = 'Private Insta';
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, 'data'));
@@ -27,8 +29,10 @@ if (fs.existsSync(DB_FILE)) {
   try { db = Object.assign(db, JSON.parse(fs.readFileSync(DB_FILE, 'utf8'))); } catch (e) { console.error('db read failed', e.message); }
 }
 let saveTimer = null;
+let fIdx = null, botCache = null;
 function writeNow() { const tmp = DB_FILE + '.tmp'; fs.writeFileSync(tmp, JSON.stringify(db)); fs.renameSync(tmp, DB_FILE); }
 function save() {
+  fIdx = null; botCache = null;                  // follower index / bot list are rebuilt on next read
   if (saveTimer) return;
   saveTimer = setTimeout(() => { saveTimer = null; writeNow(); }, 300);
 }
@@ -54,7 +58,10 @@ const DEFAULT_SETTINGS = {
   theme: 'auto', language: 'en',
 };
 const LIST_KEYS = ['blocked', 'restricted', 'closeFriends', 'storyHidden', 'mutedPosts', 'mutedStories'];
+const BOT_LISTS = Object.freeze(Object.fromEntries(LIST_KEYS.map(k => [k, Object.freeze([])])));
+function botSettings(u) { return Object.assign({}, DEFAULT_SETTINGS, { private: !!u.priv, hiddenWords: [], notif: Object.assign({}, DEFAULT_SETTINGS.notif) }); }
 function settingsOf(u) {
+  if (u.isBot) return botSettings(u);              // bots: never stored, never editable
   if (!u.settings || typeof u.settings !== 'object') u.settings = {};
   const s = u.settings;
   for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) {
@@ -63,16 +70,17 @@ function settingsOf(u) {
   for (const [k, v] of Object.entries(DEFAULT_SETTINGS.notif)) if (typeof s.notif[k] !== 'boolean') s.notif[k] = v;
   return s;
 }
-function L(u) { for (const k of LIST_KEYS) if (!Array.isArray(u[k])) u[k] = []; return u; }
+function L(u) { if (u.isBot) return BOT_LISTS; for (const k of LIST_KEYS) if (!Array.isArray(u[k])) u[k] = []; return u; }
 function migrate() {
   let changed = false;
   if (!db.requests || typeof db.requests !== 'object') { db.requests = {}; changed = true; }
   if (!db.accepted || typeof db.accepted !== 'object') { // every v1.0 conversation counts as accepted (nothing moves to Requests)
     db.accepted = {}; for (const m of Object.values(db.messages)) db.accepted[m.conv] = true; changed = true;
   }
-  for (const u of Object.values(db.users)) { if (!u.settings) changed = true; settingsOf(u); L(u); if (!Array.isArray(u.logins)) u.logins = []; }
+  for (const u of Object.values(db.users)) { if (u.isBot) continue; if (!u.settings) changed = true; settingsOf(u); L(u); if (!Array.isArray(u.logins)) u.logins = []; }
   for (const p of Object.values(db.posts)) { if (p.commentsOff === undefined) { p.commentsOff = false; p.hideLikes = false; changed = true; } }
   if ((db.schema || 1) < 2) { db.schema = 2; changed = true; }
+  if (db.schema < 3) { migrateBoostsToBots(); db.schema = 3; changed = true; } // v1.2: boost numbers -> bot entries (same totals)
   if (changed) save();
 }
 
@@ -86,8 +94,19 @@ function checkPassword(user, pw) {
 const USERNAME_RE = /^[a-z0-9._]{3,20}$/;
 function clean(s, max) { return String(s == null ? '' : s).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '').trim().slice(0, max); }
 function userByName(name) { name = String(name || '').toLowerCase(); return Object.values(db.users).find(u => u.username === name) || null; }
-function following(uid) { return db.follows[uid] || (db.follows[uid] = []); }
-function followers(uid) { return Object.keys(db.follows).filter(k => (db.follows[k] || []).includes(uid)); }
+function following(uid) {
+  if (db.follows[uid]) return db.follows[uid];
+  if (db.users[uid] && db.users[uid].isBot) return [];   // bots get a stored list only when they follow someone (keeps db small)
+  return (db.follows[uid] = []);
+}
+function followerIndex() { // reverse index: uid -> [follower ids]; rebuilt after any save()
+  if (fIdx) return fIdx;
+  fIdx = new Map();
+  for (const [k, arr] of Object.entries(db.follows)) for (const t of (arr || [])) { let s = fIdx.get(t); if (!s) fIdx.set(t, s = []); s.push(k); }
+  return fIdx;
+}
+function followers(uid) { return (followerIndex().get(uid) || []).slice(); }
+const isBotId = (i) => !!(db.users[i] && db.users[i].isBot);
 function convKey(a, b) { return [a, b].sort().join(':'); }
 const isFollowing = (a, b) => following(a).includes(b);              // a follows b
 const gone = (u) => !u || u.deactivated || u.suspended;               // hidden from everyone else
@@ -109,6 +128,163 @@ function visibleUser(name, me) {
 }
 function followerCount(u) { return followers(u.id).filter(i => !gone(db.users[i])).length + (u.bonusFollowers || 0); }
 
+// ---------------------------------------------------------------- v1.2 bot accounts
+// Admin boosts create follow / like / comment entries from bot accounts so every list shows real-looking names.
+// Bots: isBot flag, no password (cannot log in), no sessions, never notify or message anyone, counted apart in admin stats.
+const BOT_ACTION_CAP = 10000;        // most bot followers / likes one admin action can add
+const BOT_POOL_CAP = 30000;          // most bot followers one user (or bot likes one post) can have = largest pool size
+const BOT_COMMENT_ACTION_CAP = 200;  // bot comments per action
+const BOT_COMMENT_CAP = 300;         // bot comments per post
+// name groups keep first names and surnames believable together (no "Salman Kaur")
+const BOT_NAMES = [
+  { w: 62, m: ['Aman', 'Rahul', 'Rohit', 'Ankit', 'Arjun', 'Vikas', 'Sahil', 'Karan', 'Aditya', 'Harsh', 'Nikhil', 'Yash', 'Deepak', 'Mohit', 'Saurabh', 'Abhishek', 'Akash', 'Vivek', 'Gaurav', 'Rajat', 'Varun', 'Kunal', 'Shubham', 'Ayush', 'Ritik', 'Rakesh', 'Manoj', 'Pankaj', 'Sunny', 'Lucky', 'Prince', 'Ravi', 'Ajay', 'Vijay', 'Tarun', 'Naveen', 'Pradeep', 'Anuj', 'Rishabh', 'Dev', 'Kartik', 'Siddharth', 'Aryan', 'Vansh', 'Kabir', 'Ishaan', 'Mayank'],
+    f: ['Priya', 'Neha', 'Pooja', 'Anjali', 'Sneha', 'Riya', 'Kajal', 'Shreya', 'Nisha', 'Muskan', 'Khushi', 'Mehak', 'Komal', 'Payal', 'Tanya', 'Divya', 'Kavya', 'Ishita', 'Aditi', 'Sakshi', 'Nandini', 'Megha', 'Jyoti', 'Preeti', 'Shivani', 'Ritika', 'Bhavna', 'Sonam', 'Rashmi', 'Swati', 'Ananya', 'Diya', 'Tanvi', 'Palak', 'Mahi', 'Kirti', 'Vaishnavi'],
+    l: ['Verma', 'Sharma', 'Gupta', 'Kumar', 'Yadav', 'Mishra', 'Tiwari', 'Pandey', 'Chauhan', 'Rathore', 'Thakur', 'Jain', 'Agarwal', 'Mehta', 'Patel', 'Shah', 'Joshi', 'Bhatt', 'Rawat', 'Negi', 'Saxena', 'Srivastava', 'Dubey', 'Chaudhary', 'Rajput', 'Soni', 'Arora', 'Kapoor', 'Malhotra', 'Bansal', 'Goyal', 'Nair', 'Reddy', 'Das', 'Roy', 'Sen', 'Singh'] },
+  { w: 26, m: ['Imran', 'Faizan', 'Arif', 'Sameer', 'Zaid', 'Danish', 'Salman', 'Irfan', 'Shahid', 'Junaid', 'Asif', 'Farhan', 'Ayaan', 'Rehan', 'Sohail', 'Tanveer', 'Aamir', 'Adnan', 'Saif', 'Arbaaz', 'Kaif', 'Nadeem', 'Wasim', 'Shoaib'],
+    f: ['Aisha', 'Sana', 'Zoya', 'Ayesha', 'Fatima', 'Nazia', 'Heena', 'Rubina', 'Afreen', 'Mehwish', 'Iqra', 'Alina', 'Sadia', 'Sumaiya', 'Nida', 'Hira', 'Zainab', 'Sara'],
+    l: ['Khan', 'Ansari', 'Qureshi', 'Shaikh', 'Malik', 'Siddiqui', 'Mirza', 'Pathan', 'Hussain', 'Rizvi', 'Sheikh', 'Saifi', 'Alvi', 'Raza'] },
+  { w: 12, m: ['Gurpreet', 'Harpreet', 'Manpreet', 'Jaspreet', 'Harjot', 'Amandeep', 'Karanveer', 'Jaskaran', 'Sukhdeep', 'Navjot'],
+    f: ['Harleen', 'Navneet', 'Gurleen', 'Simran', 'Jasleen', 'Manpreet', 'Amrit', 'Rupinder', 'Kiranjot'],
+    lm: ['Singh', 'Gill', 'Sandhu', 'Dhillon', 'Grewal', 'Sidhu', 'Bajwa'], lf: ['Kaur', 'Gill', 'Sandhu', 'Dhillon', 'Grewal'] },
+];
+function botName() {
+  let x = crypto.randomInt(100), grp = BOT_NAMES[0]; for (const gp of BOT_NAMES) { if (x < gp.w) { grp = gp; break; } x -= gp.w; }
+  const g = crypto.randomInt(100) < 45 ? 1 : 0;
+  return { g, first: pick(g ? grp.f : grp.m), last: pick(grp.l || (g ? grp.lf : grp.lm)) };
+}
+const BOT_CITY = ['delhi', 'mumbai', 'jaipur', 'lucknow', 'indore', 'patna', 'pune', 'bhopal', 'up', 'mp', 'punjab', 'hyd', 'kolkata', 'surat', 'agra', 'kanpur'];
+const BOT_BIO = ['', '', '', '', 'Dil se Desi 🇮🇳', 'Engineering student 📚', 'Foodie 🍕 | Traveller ✈️', 'Gym lover 💪', 'Just vibing ✨', 'Photography 📸', 'Cricket lover 🏏', 'Insta pe naya hu 😅', 'BCA student 💻', 'Shayari lover ✍️', 'Mehnat karo, result aayega 🔥', 'Coder by day, gamer by night 🎮', 'Chai > Coffee ☕', 'Music is life 🎧', 'Smile always 😊', 'Living my best life 🌸', 'Bike lover 🏍️', 'Delhi wale 😎', 'Mumbai meri jaan ❤️', 'Simple life, big dreams', 'Learning every day 📖', 'Proud Indian 🇮🇳', 'Bollywood fan 🎬', 'Self made 💯', 'Nature lover 🌿', 'Mom\'s favourite ❤️', 'Fashion & lifestyle 👗', 'Biryani lover 🍗', 'Allah is great ✨', 'Jai Shree Ram 🙏', 'Waheguru ji 🙏', 'Future doctor 🩺', 'UPSC aspirant 📚', 'Dancer 💃', 'Artist 🎨', 'Travel diaries 🌍'];
+const BOT_COMMENTS = ['Bhai kya photo hai 🔥', 'Looking good 😎', 'Nice click 📸', 'Ekdum mast ❤️', 'Fire 🔥🔥', 'Sahi hai bhai 👌', 'Wah 😍', 'Killer look 🔥', 'Bohot sundar ✨', 'Next level 🤩', 'Keep shining ✨', 'Dil jeet liya ❤️', 'Bhai tu toh hero hai 😎', 'Superb click 👏', 'Hayee 😍', '💯💯', '😍🔥', '👏👏👏', 'Uff 🔥', 'Nice bro 👍', '🔥🔥', '🔥🔥🔥', 'Nice bro', 'Mast hai 😍', 'Superb 👌', 'Awesome ❤️', 'Bahut badhiya', 'Kya baat hai 🔥', 'Nice pic', 'Love it ❤️', 'Wow 😍', 'Op bhai 🔥', 'Great work 👏', 'Beautiful ✨', 'Jhakaas 💯', 'Too good', 'Keep it up 👍', 'Lit 🔥', 'Amazing 😍😍', 'Kamaal hai yaar', 'Zabardast 👌', '❤️❤️❤️', 'Nice one', 'So cool 😎', 'Gajab 🔥', 'Very nice 👍', 'Mind blowing 🤩', 'Perfect 👌', 'Classy 😎', 'Legend 🙌'];
+const pick = (a) => a[crypto.randomInt(a.length)];
+function botHash(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
+function botIds() { // all bots, oldest first (cached until the next save)
+  if (!botCache) botCache = Object.values(db.users).filter(u => u.isBot).sort((a, b) => (a.n || 0) - (b.n || 0)).map(u => u.id);
+  return botCache;
+}
+function botUsername(first, last, taken) {
+  const f = first.toLowerCase(), l = last.toLowerCase(), n2 = () => String(crypto.randomInt(1, 99)), y = () => String(crypto.randomInt(95, 100) > 97 ? crypto.randomInt(1990, 2009) : crypto.randomInt(1, 999));
+  const forms = [() => f + '.' + l[0] + '_' + n2(), () => f + '_' + l, () => 'its_' + f + '_' + l, () => f + '.' + l + n2(), () => f + '__' + y(), () => 'the.' + f + '.' + l,
+    () => f + '_' + pick(BOT_CITY), () => l + '.' + f, () => f + l + '_' + n2(), () => 'im_' + f + n2(), () => f + '.official', () => f + '_' + l[0] + l[1] + '_' + y(), () => 'desi_' + f, () => f + '.' + l + '_'];
+  for (let i = 0; i < 40; i++) {
+    let u = pick(forms)().replace(/[^a-z0-9._]/g, '').replace(/^[._]+|[._]+$/g, '').slice(0, 20);
+    if (i > 20) u = (u.slice(0, 15) + '_' + crypto.randomInt(100, 9999)).slice(0, 20);
+    if (u.length >= 3 && USERNAME_RE.test(u) && !taken.has(u)) return u;
+  }
+  return 'user_' + id(4);
+}
+function ensureBots(n) { // grow the pool so at least n bots exist
+  if (n > BOT_POOL_CAP) throw httpErr(400, 'Max ' + BOT_POOL_CAP.toLocaleString('en-IN') + ' bots');
+  const have = botIds().length; if (have >= n) return;
+  const taken = new Set(Object.values(db.users).map(u => u.username));
+  let seq = have ? Math.max(...botIds().slice(-1).map(i => db.users[i].n || 0)) : 0;
+  for (let k = have; k < n; k++) {
+    const { g, first, last } = botName();
+    const username = botUsername(first, last, taken); taken.add(username);
+    const u = { id: id(), username, name: crypto.randomInt(100) < 12 ? first : first + ' ' + last, bio: pick(BOT_BIO), isBot: true, g, priv: crypto.randomInt(100) < 45 ? 1 : 0,
+      created: now() - crypto.randomInt(30, 900) * 864e5, n: ++seq };
+    db.users[u.id] = u;
+  }
+  save();
+}
+function botAvatarUrl(u) { const h = botHash(u.id); return (h % 100) < 10 ? null : '/bot-avatar/' + u.id + '.svg'; } // ~10% keep the default picture, like real accounts
+function botAvatarSvg(u) {
+  const h = botHash(u.id), r = (k, n) => Math.floor(h / k) % n;
+  const BG = [['#f9a8d4', '#a78bfa'], ['#93c5fd', '#22d3ee'], ['#fcd34d', '#fb923c'], ['#86efac', '#14b8a6'], ['#c4b5fd', '#f472b6'], ['#fda4af', '#f59e0b'], ['#a5b4fc', '#60a5fa'], ['#5eead4', '#818cf8'], ['#fde68a', '#f87171'], ['#bbf7d0', '#38bdf8']];
+  const [c1, c2] = BG[r(7, BG.length)];
+  const grad = `<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${c1}"/><stop offset="1" stop-color="${c2}"/></linearGradient></defs><rect width="100" height="100" fill="url(#g)"/>`;
+  if (r(3, 100) < 25) { // initials style
+    const ini = (u.name || u.username).split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase().replace(/[^A-Z]/g, '') || 'U';
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">${grad}<text x="50" y="50" dy=".35em" text-anchor="middle" font-family="Helvetica,Arial,sans-serif" font-size="40" font-weight="700" fill="#fff" opacity=".95">${ini}</text></svg>`;
+  }
+  const SKIN = ['#f1c27d', '#e0ac69', '#c68642', '#a0672f', '#ffdbac', '#d9a066'], HAIR = ['#1b1b1b', '#2c1b10', '#3b2314', '#4a2f1b', '#101010', '#5a3825'];
+  const SHIRT = ['#1e3a8a', '#0f766e', '#7c2d12', '#be185d', '#374151', '#f8fafc', '#4c1d95', '#b91c1c', '#065f46', '#111827'];
+  const skin = SKIN[r(11, SKIN.length)], hair = HAIR[r(13, HAIR.length)], shirt = SHIRT[r(17, SHIRT.length)];
+  const back = u.g ? `<path d="M24 46c0-20 12-31 26-31s26 11 26 31v32H24z" fill="${hair}"/>` : '';
+  const top = u.g ? `<path d="M29 42c2-15 11-22 21-22s19 7 21 22c-6-8-14-11-21-11s-15 3-21 11z" fill="${hair}"/>`
+    : [`<path d="M30 40c0-13 9-20 20-20s20 7 20 20c-4-6-11-9-20-9s-16 3-20 9z" fill="${hair}"/>`, `<path d="M30 42c-1-15 8-23 20-23 13 0 21 8 20 23-3-9-9-12-20-12s-17 3-20 12z" fill="${hair}"/><path d="M38 22c6-4 18-4 24 1" stroke="${hair}" stroke-width="5" fill="none"/>`][r(19, 2)];
+  const beard = !u.g && r(23, 100) < 35 ? `<path d="M33 50c1 14 8 21 17 21s16-7 17-21c-3 6-9 9-17 9s-14-3-17-9z" fill="${hair}" opacity=".9"/>` : '';
+  const glasses = r(29, 100) < 22 ? `<g fill="none" stroke="#111" stroke-width="1.8"><circle cx="42" cy="46" r="6"/><circle cx="58" cy="46" r="6"/><path d="M48 46h4"/></g>` : '';
+  const ear = u.g && r(31, 100) < 50 ? `<circle cx="31" cy="52" r="1.8" fill="#facc15"/><circle cx="69" cy="52" r="1.8" fill="#facc15"/>` : '';
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">${grad}${back}<path d="M18 100c2-17 15-26 32-26s30 9 32 26z" fill="${shirt}"/><rect x="44" y="60" width="12" height="16" rx="5" fill="${skin}"/>`
+    + `<ellipse cx="50" cy="46" rx="19" ry="22" fill="${skin}"/><circle cx="31" cy="48" r="3.5" fill="${skin}"/><circle cx="69" cy="48" r="3.5" fill="${skin}"/>${ear}${top}`
+    + `<circle cx="42.5" cy="46" r="2.2" fill="#1f1f1f"/><circle cx="57.5" cy="46" r="2.2" fill="#1f1f1f"/><path d="M38 40.5q4-2.5 8 0M54 40.5q4-2.5 8 0" stroke="${hair}" stroke-width="1.6" fill="none"/>`
+    + `<path d="M44 57q6 ${4 + r(37, 3)} 12 0" stroke="#7a3b2e" stroke-width="2" fill="none" stroke-linecap="round"/>${beard}${glasses}</svg>`;
+}
+// --- follower bots
+const botFollowersOf = (uid) => followers(uid).filter(isBotId);
+function setBotFollowers(u, n, opts = {}) { // makes exactly n bots follow u (adds or removes ONLY bot edges)
+  if (u.isBot) throw httpErr(400, "Bots can't be boosted");
+  n = Math.max(0, Math.round(Number(n) || 0));
+  const cur = botFollowersOf(u.id);
+  if (n > cur.length) {
+    const add = n - cur.length;
+    if (!opts.noCap && add > BOT_ACTION_CAP) throw httpErr(400, 'Max ' + BOT_ACTION_CAP.toLocaleString('en-IN') + ' followers per action — add in steps');
+    if (n > BOT_POOL_CAP) throw httpErr(400, 'Max ' + BOT_POOL_CAP.toLocaleString('en-IN') + ' bot followers per account');
+    ensureBots(n);
+    const have = new Set(cur), ids = botIds(), start = crypto.randomInt(ids.length); let added = 0;
+    for (let i = 0; i < ids.length && added < add; i++) { const b = ids[(start + i) % ids.length]; if (!have.has(b)) { (db.follows[b] || (db.follows[b] = [])).push(u.id); added++; } }
+  } else if (n < cur.length) {
+    const drop = new Set(cur.slice(n));
+    for (const b of drop) { const arr = (db.follows[b] || []).filter(x => x !== u.id); if (arr.length) db.follows[b] = arr; else delete db.follows[b]; }
+  }
+  save(); return n;
+}
+// --- like bots
+const botLikesOf = (x) => x.likes.filter(isBotId);
+function setBotLikes(x, n, opts = {}) {
+  n = Math.max(0, Math.round(Number(n) || 0));
+  const cur = botLikesOf(x);
+  if (n > cur.length) {
+    const add = n - cur.length;
+    if (!opts.noCap && add > BOT_ACTION_CAP) throw httpErr(400, 'Max ' + BOT_ACTION_CAP.toLocaleString('en-IN') + ' likes per action — add in steps');
+    if (n > BOT_POOL_CAP) throw httpErr(400, 'Max ' + BOT_POOL_CAP.toLocaleString('en-IN') + ' bot likes per post');
+    ensureBots(n);
+    const have = new Set(cur), ids = botIds(), start = crypto.randomInt(ids.length); let added = 0;
+    for (let i = 0; i < ids.length && added < add; i++) { const b = ids[(start + i) % ids.length]; if (!have.has(b)) { x.likes.push(b); added++; } }
+  } else if (n < cur.length) { const drop = new Set(cur.slice(n)); x.likes = x.likes.filter(i => !drop.has(i)); }
+  save(); return n;
+}
+// --- comment bots (short generic comments; removable)
+const botCommentsOf = (x) => Object.values(db.comments).filter(c => c.pid === x.id && c.bot);
+function setBotComments(x, n, opts = {}) {
+  n = Math.max(0, Math.round(Number(n) || 0));
+  const cur = botCommentsOf(x).sort((a, b) => a.created - b.created);
+  if (n > cur.length) {
+    const add = n - cur.length;
+    if (!opts.noCap && add > BOT_COMMENT_ACTION_CAP) throw httpErr(400, 'Max ' + BOT_COMMENT_ACTION_CAP + ' comments per action');
+    if (n > BOT_COMMENT_CAP) throw httpErr(400, 'Max ' + BOT_COMMENT_CAP + ' bot comments per post');
+    // each comment from a different bot, texts never repeated back-to-back, owner's hidden words respected, no notifications
+    ensureBots(Math.max(n * 2, 50)); const used = new Set(cur.map(c => c.uid));
+    const free = botIds().filter(i => !used.has(i)); for (let i = free.length - 1; i > 0; i--) { const j = crypto.randomInt(i + 1); [free[i], free[j]] = [free[j], free[i]]; }
+    const owner = db.users[x.uid]; const words = owner ? settingsOf(owner).hiddenWords.filter(Boolean) : [];
+    const texts = BOT_COMMENTS.filter(t => !words.some(w => t.toLowerCase().includes(w))); const pool = texts.length >= 2 ? texts : ['🔥🔥', '❤️❤️'];
+    const t0 = Math.max(x.created, cur.length ? cur[cur.length - 1].created : 0), span = Math.max(60e3, now() - t0);
+    const times = Array.from({ length: add }, () => Math.min(now(), t0 + 1e3 + crypto.randomInt(Math.max(1, Math.floor(span - 1e3))))).sort((a, b) => a - b);
+    let prev = cur.length ? cur[cur.length - 1].text : null;
+    for (let k = 0; k < add; k++) {
+      let text = pick(pool); for (let tries = 0; text === prev && tries < 10; tries++) text = pick(pool);
+      const c = { id: id(), pid: x.id, uid: free[k % free.length], text, created: times[k], bot: true }; db.comments[c.id] = c; prev = text;
+    }
+  } else if (n < cur.length) { for (const c of cur.slice(n)) delete db.comments[c.id]; }
+  save(); return n;
+}
+function removeAllBotsFrom(u) { // "Remove all bots from this user": bot follows + bot likes/comments on their posts; real people untouched
+  const out = { followers: botFollowersOf(u.id).length, likes: 0, comments: 0 };
+  setBotFollowers(u, 0, { noCap: true });
+  for (const x of Object.values(db.posts)) if (x.uid === u.id) { out.likes += botLikesOf(x).length; out.comments += botCommentsOf(x).length; setBotLikes(x, 0, { noCap: true }); setBotComments(x, 0, { noCap: true }); }
+  delete u.bonusFollowers; save(); return out;
+}
+function migrateBoostsToBots() { // v1.1 stored boosts as plain numbers; v1.2 turns them into bot entries (totals unchanged)
+  for (const u of Object.values(db.users)) if (!u.isBot && u.bonusFollowers > 0) {
+    const k = Math.min(u.bonusFollowers, BOT_POOL_CAP); setBotFollowers(u, botFollowersOf(u.id).length + k, { noCap: true });
+    if (u.bonusFollowers - k > 0) u.bonusFollowers -= k; else delete u.bonusFollowers;
+  }
+  for (const x of Object.values(db.posts)) {
+    if (x.bonusLikes > 0) { const k = Math.min(x.bonusLikes, BOT_POOL_CAP); setBotLikes(x, botLikesOf(x).length + k, { noCap: true }); if (x.bonusLikes - k > 0) x.bonusLikes -= k; else delete x.bonusLikes; }
+    if (x.bonusComments > 0) { const k = Math.min(x.bonusComments, BOT_COMMENT_CAP); setBotComments(x, botCommentsOf(x).length + k, { noCap: true }); if (x.bonusComments - k > 0) x.bonusComments -= k; else delete x.bonusComments; }
+  }
+}
+
 function mediaUrl(file) { return file ? '/media/' + file : null; }
 function activeStories(uid) { const t = now(); return Object.values(db.stories).filter(s => s.uid === uid && t - s.created < STORY_TTL).sort((a, b) => a.created - b.created); }
 function storyVisible(s, viewer) {
@@ -123,7 +299,7 @@ function storyVisible(s, viewer) {
 function storiesFor(uid, viewer) { return activeStories(uid).filter(s => storyVisible(s, viewer)); }
 function publicUser(u, me) {
   if (!u) return null;
-  const o = { id: u.id, username: u.username, name: u.name, avatar: mediaUrl(u.avatar), verified: !!u.verified, accent: u.accent || null, isPrivate: !!(u.settings && u.settings.private) };
+  const o = { id: u.id, username: u.username, name: u.name, avatar: u.isBot ? botAvatarUrl(u) : mediaUrl(u.avatar), verified: !!u.verified, accent: u.accent || null, isPrivate: u.isBot ? !!u.priv : !!(u.settings && u.settings.private) };
   if (me) {
     const st = storiesFor(u.id, me);
     o.hasStory = st.length > 0;
@@ -148,6 +324,15 @@ function commentBlockReason(post, me) {
   if (s.commentsFrom === 'followers' && !isFollowing(me.id, owner.id)) return 'Only followers of ' + owner.username + ' can comment';
   return null;
 }
+function likedByName(p, me) { // "Liked by X and N others": someone the viewer follows, else the latest real liker, else the latest bot
+  let best = null, real = null, bot = null;
+  for (let i = p.likes.length - 1; i >= 0; i--) {
+    const u = db.users[p.likes[i]]; if (!u || u.id === me.id || gone(u) || blockedEither(u.id, me.id)) continue;
+    if (isFollowing(me.id, u.id)) { best = u; break; }
+    if (!u.isBot && !real) real = u; else if (u.isBot && !bot) bot = u;
+  }
+  const u = best || real || bot; return u ? u.username : null;
+}
 function postView(p, me) {
   const mine = p.uid === me.id;
   const vis = visibleComments(p, me);
@@ -155,6 +340,7 @@ function postView(p, me) {
     id: p.id, type: p.type, media: mediaUrl(p.media), caption: p.caption, created: p.created,
     user: publicUser(db.users[p.uid], me),
     likes: (p.hideLikes && !mine) ? null : p.likes.length + (p.bonusLikes || 0), likesHidden: !!p.hideLikes,
+    likedBy: (p.hideLikes && !mine) ? null : likedByName(p, me),
     views: (p.views || []).length + (p.bonusViews || 0),
     liked: p.likes.includes(me.id), saved: p.saves.includes(me.id),
     comments: vis.length + (p.bonusComments || 0), commentsOff: !!p.commentsOff, canComment: !commentBlockReason(p, me), commentNote: commentBlockReason(p, me),
@@ -181,7 +367,7 @@ function messageView(m, me) {
 const NOTIF_PREF = { like: 'likes', comment: 'comments', follow: 'follows', request: 'follows', accept: 'follows', mention: 'mentions' };
 function notify(to, from, type, extra) {
   if (to === from) return;
-  const target = db.users[to]; if (!target || blockedEither(to, from)) return;
+  const target = db.users[to]; if (!target || target.isBot || blockedEither(to, from)) return;   // bots never get notifications
   const pref = NOTIF_PREF[type]; if (pref && settingsOf(target).notif[pref] === false) return; // user switched this notification off
   const n = Object.assign({ id: id(), to, from, type, created: now(), read: false }, extra || {});
   db.notifs[n.id] = n; save();
@@ -423,7 +609,7 @@ route('POST', '/api/login', false, async (req, res, b) => {
   const ipKey = 'loginfail:' + clientIp(req), uKey = 'loginfail:' + username;
   if (tooMany(ipKey, 60, false) || tooMany(uKey, 10, false)) throw httpErr(429, 'Too many wrong passwords, wait 10 minutes');
   const u = userByName(username);
-  if (!u || !checkPassword(u, String(b.password || ''))) { tooMany(ipKey, 60); tooMany(uKey, 10); throw httpErr(401, 'Wrong username or password'); }
+  if (!u || u.isBot || !u.pass || !checkPassword(u, String(b.password || ''))) { tooMany(ipKey, 60); tooMany(uKey, 10); throw httpErr(401, 'Wrong username or password'); }
   if (u.suspended) throw httpErr(403, 'This account has been suspended by the admin');
   let reactivated = false;
   if (u.deactivated) { u.deactivated = false; delete u.deactivatedAt; reactivated = true; } // logging in again reactivates (like Instagram)
@@ -625,12 +811,22 @@ route('GET', '/api/users/:username', true, async (req, res, b, me, p) => {
   if (blockedByMe) { user.hasStory = false; }
   send(res, 200, { user, posts });
 });
-route('GET', '/api/users/:username/:list', true, async (req, res, b, me, p) => {
+function pageArgs(q, total) { // ?offset=&limit= with sane bounds; no args = first 60 (v1.1 clients still work)
+  const offset = Math.max(0, Math.min(parseInt((q && q.get('offset')) || '0', 10) || 0, total));
+  const limit = Math.max(1, Math.min(parseInt((q && q.get('limit')) || '60', 10) || 60, 100));
+  return { offset, limit };
+}
+route('GET', '/api/users/:username/:list', true, async (req, res, b, me, p, q) => {
   const u = visibleUser(p.username, me);
   if (!canView(me, u)) throw httpErr(403, 'This account is private');
   let ids;
-  if (p.list === 'followers') ids = followers(u.id); else if (p.list === 'following') ids = following(u.id); else throw httpErr(404, 'Not found');
-  send(res, 200, { users: ids.map(i => db.users[i]).filter(x => x && !gone(x) && !blockedEither(x.id, me.id)).map(x => Object.assign(publicUser(x, me), { isFollowing: isFollowing(me.id, x.id), requested: (db.requests[x.id] || []).includes(me.id), isMe: x.id === me.id })) });
+  if (p.list === 'followers') ids = followers(u.id).reverse(); else if (p.list === 'following') ids = following(u.id).slice().reverse(); else throw httpErr(404, 'Not found');
+  // newest first, real people before bots; paginated (?offset=&limit=) so a boosted account with thousands of followers stays fast
+  const all = ids.map(i => db.users[i]).filter(x => x && !gone(x) && !blockedEither(x.id, me.id)).sort((a, c) => (a.isBot ? 1 : 0) - (c.isBot ? 1 : 0));
+  const { offset, limit } = pageArgs(q, all.length);
+  const page = all.slice(offset, offset + limit);
+  send(res, 200, { users: page.map(x => Object.assign(publicUser(x, me), { isFollowing: isFollowing(me.id, x.id), followsYou: isFollowing(x.id, me.id), requested: (db.requests[x.id] || []).includes(me.id), isMe: x.id === me.id })),
+    total: all.length, offset, next: offset + limit < all.length ? offset + limit : null });
 });
 route('POST', '/api/users/:username/follow', true, async (req, res, b, me, p) => {
   const u = visibleUser(p.username, me);
@@ -679,6 +875,7 @@ route('GET', '/api/search', true, async (req, res, b, me, p, q) => {
   let list = Object.values(db.users).filter(u => u.id !== me.id && !gone(u) && !blockedEither(u.id, me.id));
   if (s) list = list.filter(u => u.username.includes(s) || (u.name || '').toLowerCase().includes(s));
   else list = list.filter(u => !isFollowing(me.id, u.id));
+  list = list.filter(u => !u.isBot).concat(list.filter(u => u.isBot)); // real people first, then bots (they look like normal accounts)
   send(res, 200, { users: list.slice(0, 30).map(u => Object.assign(publicUser(u, me), { isFollowing: isFollowing(me.id, u.id), requested: (db.requests[u.id] || []).includes(me.id), followers: followerCount(u) })) });
 });
 
@@ -729,6 +926,14 @@ route('DELETE', '/api/posts/:id', true, async (req, res, b, me, p) => {
   removePost(x); send(res, 200, { ok: true });
 });
 const likeCount = (x) => x.likes.length + (x.bonusLikes || 0);
+route('GET', '/api/posts/:id/likes', true, async (req, res, b, me, p, q) => { // "Liked by" list (paginated)
+  const x = viewPost(p.id, me);
+  if (x.hideLikes && x.uid !== me.id) throw httpErr(403, 'The owner hid the likes on this post');
+  const all = x.likes.slice().reverse().map(i => db.users[i]).filter(u => u && !gone(u) && !blockedEither(u.id, me.id)).sort((a, c) => (a.isBot ? 1 : 0) - (c.isBot ? 1 : 0));
+  const { offset, limit } = pageArgs(q, all.length);
+  send(res, 200, { users: all.slice(offset, offset + limit).map(u => Object.assign(publicUser(u, me), { isFollowing: isFollowing(me.id, u.id), requested: (db.requests[u.id] || []).includes(me.id), isMe: u.id === me.id })),
+    total: all.length, offset, next: offset + limit < all.length ? offset + limit : null });
+});
 route('POST', '/api/posts/:id/like', true, async (req, res, b, me, p) => {
   const x = viewPost(p.id, me); if (!x.likes.includes(me.id)) { x.likes.push(me.id); notify(x.uid, me.id, 'like', { pid: x.id }); }
   save(); send(res, 200, { liked: true, likes: (x.hideLikes && x.uid !== me.id) ? null : likeCount(x) });
@@ -956,21 +1161,23 @@ const adminRoute = (method, pattern, fn) => route(method, pattern, true, async (
 adminRoute('GET', '/api/admin/stats', async (req, res) => {
   const t = now();
   send(res, 200, { stats: {
-    users: Object.keys(db.users).length, activeToday: Object.values(db.users).filter(u => u.lastActive && t - u.lastActive < 864e5).length, onlineNow: streams.size,
+    users: Object.values(db.users).filter(u => !u.isBot).length, bots: botIds().length, activeToday: Object.values(db.users).filter(u => u.lastActive && t - u.lastActive < 864e5).length, onlineNow: streams.size,
     posts: Object.values(db.posts).filter(p => p.type === 'image').length, reels: Object.values(db.posts).filter(p => p.type === 'video').length,
-    stories: Object.values(db.stories).filter(s => t - s.created < STORY_TTL).length, comments: Object.keys(db.comments).length,
-    messages: Object.values(db.messages).filter(m => !m.deleted).length, likes: Object.values(db.posts).reduce((a, p) => a + p.likes.length, 0),
-    privateAccounts: Object.values(db.users).filter(u => settingsOf(u).private).length, suspended: Object.values(db.users).filter(u => u.suspended).length,
+    stories: Object.values(db.stories).filter(s => t - s.created < STORY_TTL).length, comments: Object.values(db.comments).filter(c => !c.bot).length, botComments: Object.values(db.comments).filter(c => c.bot).length,
+    messages: Object.values(db.messages).filter(m => !m.deleted).length, likes: Object.values(db.posts).reduce((a, p) => a + p.likes.filter(i => !isBotId(i)).length, 0),
+    botFollows: Object.entries(db.follows).reduce((a, [k, v]) => a + (isBotId(k) ? (v || []).length : 0), 0), botLikes: Object.values(db.posts).reduce((a, p) => a + botLikesOf(p).length, 0),
+    privateAccounts: Object.values(db.users).filter(u => !u.isBot && settingsOf(u).private).length, suspended: Object.values(db.users).filter(u => u.suspended).length,
   }, version: VERSION });
 });
 function adminUser(u) {
   return { id: u.id, username: u.username, name: u.name, avatar: mediaUrl(u.avatar), verified: !!u.verified, admin: !!u.admin, demo: !!u.demo, suspended: !!u.suspended, deactivated: !!u.deactivated,
     created: u.created, lastActive: u.lastActive || null, posts: Object.values(db.posts).filter(p => p.uid === u.id).length,
-    realFollowers: followers(u.id).length, bonusFollowers: u.bonusFollowers || 0, shownFollowers: followerCount(u), following: following(u.id).length, private: settingsOf(u).private };
+    realFollowers: followers(u.id).filter(i => !isBotId(i)).length, botFollowers: botFollowersOf(u.id).length, extraFollowers: u.bonusFollowers || 0,
+    bonusFollowers: botFollowersOf(u.id).length + (u.bonusFollowers || 0), shownFollowers: followerCount(u), following: following(u.id).length, private: settingsOf(u).private };
 }
 adminRoute('GET', '/api/admin/users', async (req, res, b, me, p, q) => {
   const s = clean(q.get('q'), 30).toLowerCase();
-  let list = Object.values(db.users); if (s) list = list.filter(u => u.username.includes(s) || (u.name || '').toLowerCase().includes(s));
+  let list = Object.values(db.users).filter(u => !u.isBot); if (s) list = list.filter(u => u.username.includes(s) || (u.name || '').toLowerCase().includes(s));
   send(res, 200, { users: list.sort((a, c) => c.created - a.created).slice(0, 200).map(adminUser) });
 });
 const adminTarget = (name) => { const u = userByName(name); if (!u) throw httpErr(404, 'User not found'); return u; };
@@ -978,8 +1185,9 @@ const boostNum = (v, cur) => { const n = Number(v); if (!Number.isFinite(n) || M
 adminRoute('PUT', '/api/admin/users/:username', async (req, res, b, me, p) => {
   const u = adminTarget(p.username);
   if (b.verified !== undefined) u.verified = !!b.verified;
-  if (b.bonusFollowers !== undefined) u.bonusFollowers = boostNum(b.bonusFollowers);           // set
-  if (b.addFollowers !== undefined) u.bonusFollowers = boostNum((u.bonusFollowers || 0) + Number(b.addFollowers)); // add
+  // v1.2: follower boosts are real follow edges from bot accounts (they show in the followers list); only bot edges are ever removed
+  if (b.bonusFollowers !== undefined) { const n = boostNum(b.bonusFollowers); delete u.bonusFollowers; setBotFollowers(u, n); }                 // set total boost
+  if (b.addFollowers !== undefined) { const add = Number(b.addFollowers); if (!Number.isFinite(add)) throw httpErr(400, 'Enter a number'); setBotFollowers(u, boostNum(botFollowersOf(u.id).length + add)); } // add (negative = remove bots)
   if (b.suspended !== undefined) {
     if (u.admin && b.suspended) throw httpErr(400, 'An admin cannot be suspended');
     u.suspended = !!b.suspended; if (u.suspended) { killSessions(u.id); closeStreams(u.id); }
@@ -992,7 +1200,8 @@ adminRoute('DELETE', '/api/admin/users/:username', async (req, res, b, me, p) =>
 });
 function adminPost(x) {
   return { id: x.id, type: x.type, media: mediaUrl(x.media), caption: x.caption.slice(0, 120), created: x.created, user: db.users[x.uid] ? db.users[x.uid].username : '?',
-    realLikes: x.likes.length, bonusLikes: x.bonusLikes || 0, realComments: Object.values(db.comments).filter(c => c.pid === x.id).length, bonusComments: x.bonusComments || 0,
+    realLikes: x.likes.filter(i => !isBotId(i)).length, bonusLikes: botLikesOf(x).length + (x.bonusLikes || 0), botLikes: botLikesOf(x).length,
+    realComments: Object.values(db.comments).filter(c => c.pid === x.id && !c.bot).length, bonusComments: botCommentsOf(x).length + (x.bonusComments || 0), botComments: botCommentsOf(x).length,
     realViews: (x.views || []).length, bonusViews: x.bonusViews || 0 };
 }
 adminRoute('GET', '/api/admin/posts', async (req, res, b, me, p, q) => {
@@ -1002,18 +1211,38 @@ adminRoute('GET', '/api/admin/posts', async (req, res, b, me, p, q) => {
 });
 adminRoute('PUT', '/api/admin/posts/:id', async (req, res, b, me, p) => {
   const x = getPost(p.id);
-  for (const k of ['Likes', 'Comments', 'Views']) {
-    if (b['bonus' + k] !== undefined) x['bonus' + k] = boostNum(b['bonus' + k]);
-    if (b['add' + k] !== undefined) x['bonus' + k] = boostNum((x['bonus' + k] || 0) + Number(b['add' + k]));
-  }
+  const num = (v) => { const n = Number(v); if (!Number.isFinite(n)) throw httpErr(400, 'Enter a number'); return n; };
+  // likes + comments = bot entries (names show in "Liked by" / comments); views stay a number
+  if (b.bonusLikes !== undefined) { delete x.bonusLikes; setBotLikes(x, boostNum(b.bonusLikes)); }
+  if (b.addLikes !== undefined) setBotLikes(x, boostNum(botLikesOf(x).length + num(b.addLikes)));
+  if (b.bonusComments !== undefined) { delete x.bonusComments; setBotComments(x, boostNum(b.bonusComments)); }
+  if (b.addComments !== undefined) setBotComments(x, boostNum(botCommentsOf(x).length + num(b.addComments)));
+  if (b.bonusViews !== undefined) x.bonusViews = boostNum(b.bonusViews);
+  if (b.addViews !== undefined) x.bonusViews = boostNum((x.bonusViews || 0) + num(b.addViews));
   save(); send(res, 200, { post: adminPost(x) });
 });
 adminRoute('POST', '/api/admin/reset-boosts', async (req, res, b) => { // all boosts, or one user's (b.username)
   const u = b.username ? adminTarget(String(b.username)) : null;
-  for (const x of Object.values(db.users)) if (!u || x.id === u.id) delete x.bonusFollowers;
-  for (const x of Object.values(db.posts)) if (!u || x.uid === u.id) { delete x.bonusLikes; delete x.bonusComments; delete x.bonusViews; }
+  for (const x of Object.values(db.users)) if (!x.isBot && (!u || x.id === u.id)) { delete x.bonusFollowers; if (botFollowersOf(x.id).length) setBotFollowers(x, 0, { noCap: true }); }
+  for (const x of Object.values(db.posts)) if (!u || x.uid === u.id) { delete x.bonusLikes; delete x.bonusComments; delete x.bonusViews; setBotLikes(x, 0, { noCap: true }); setBotComments(x, 0, { noCap: true }); }
   for (const x of Object.values(db.stories)) if (!u || x.uid === u.id) delete x.bonusViews;
   save(); send(res, 200, { ok: true });
+});
+adminRoute('GET', '/api/admin/bots', async (req, res, b, me, p, q) => { // Bots tab: pool size, who has bots, a page of bots
+  const boosted = [];
+  for (const u of Object.values(db.users)) {
+    if (u.isBot) continue;
+    const f = botFollowersOf(u.id).length; let l = 0, c = 0;
+    for (const x of Object.values(db.posts)) if (x.uid === u.id) { l += botLikesOf(x).length; c += botCommentsOf(x).length; }
+    if (f || l || c) boosted.push({ username: u.username, name: u.name, avatar: mediaUrl(u.avatar), verified: !!u.verified, botFollowers: f, botLikes: l, botComments: c, realFollowers: followers(u.id).filter(i => !isBotId(i)).length });
+  }
+  const ids = botIds(); const { offset, limit } = pageArgs(q, ids.length);
+  const list = ids.slice().reverse().slice(offset, offset + Math.min(limit, 50)).map(i => db.users[i]).map(u => ({ username: u.username, name: u.name, avatar: botAvatarUrl(u), bio: u.bio, private: !!u.priv, follows: (db.follows[u.id] || []).length }));
+  send(res, 200, { total: ids.length, poolCap: BOT_POOL_CAP, actionCap: BOT_ACTION_CAP, boosted: boosted.sort((a, c) => c.botFollowers - a.botFollowers), bots: list, offset, next: offset + 50 < ids.length ? offset + 50 : null });
+});
+adminRoute('DELETE', '/api/admin/users/:username/bots', async (req, res, b, me, p) => {
+  const u = adminTarget(p.username); if (u.isBot) throw httpErr(400, 'That is a bot');
+  const removed = removeAllBotsFrom(u); send(res, 200, { ok: true, removed, user: adminUser(u) });
 });
 adminRoute('GET', '/api/admin/stories', async (req, res) => {
   const t = now();
@@ -1065,6 +1294,11 @@ const server = http.createServer(async (req, res) => {
       await r.fn(req, res, body, me, params, url.searchParams);
       return;
     }
+    if (pathname.startsWith('/bot-avatar/')) { // generated bot pictures (drawn shapes / initials, no real photos)
+      const m = /^\/bot-avatar\/([a-f0-9]{24})\.svg$/.exec(pathname); const u = m && db.users[m[1]];
+      if (!u || !u.isBot) { res.writeHead(404, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); return res.end('Not found'); }
+      res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public, max-age=604800, immutable' }); return res.end(botAvatarSvg(u));
+    }
     if (pathname.startsWith('/media/')) {
       const file = pathname.slice(7);
       // every answer here is per-user: never let a CDN cache an error/denial and replay it to someone else
@@ -1078,7 +1312,7 @@ const server = http.createServer(async (req, res) => {
       res.setHeader('Vary', 'Cookie');
       return serveFile(req, res, path.join(MEDIA_DIR, file), MIME[file.split('.').pop()], 'private, max-age=3600');
     }
-    if (pathname === '/healthz') return send(res, 200, { ok: true, app: APP_NAME, version: VERSION, users: Object.keys(db.users).length, posts: Object.keys(db.posts).length });
+    if (pathname === '/healthz') return send(res, 200, { ok: true, app: APP_NAME, version: VERSION, users: Object.values(db.users).filter(u => !u.isBot).length, posts: Object.keys(db.posts).length });
     // static files
     let f = path.normalize(path.join(PUBLIC_DIR, pathname));
     if (!f.startsWith(PUBLIC_DIR)) { res.writeHead(400); return res.end(); }

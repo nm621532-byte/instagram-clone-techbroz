@@ -241,18 +241,52 @@ function authPage(mode) {
 addRoute(/^#\/login$/, () => authPage('login'), { noTabs: true });
 addRoute(/^#\/signup$/, () => authPage('signup'), { noTabs: true });
 
+// ------------------------------------------------------------------ v1.2 paginated people lists (followers / following / liked by)
+function pagedList(url, box, emptyMsg, onTotal) {
+  let next = 0, busy = false;
+  const more = h('div', { class: 'more-row' });
+  const io = 'IntersectionObserver' in window ? new IntersectionObserver((es) => { if (es.some(e => e.isIntersecting)) load(); }) : null;
+  async function load() {
+    if (busy || next == null) return; busy = true;
+    if (next === 0) box.replaceChildren(spinner()); else more.replaceChildren(spinner());
+    try {
+      const d = await GET(url + (url.includes('?') ? '&' : '?') + 'offset=' + next + '&limit=40');
+      if (next === 0) { box.replaceChildren(); if (onTotal) onTotal(d.total != null ? d.total : d.users.length); }
+      if (next === 0 && !d.users.length) { box.append(h('div', { class: 'empty' }, emptyMsg)); next = null; return; }
+      more.remove(); box.append(...d.users.map(userRow));
+      next = d.next == null ? null : d.next;
+      if (next != null) { more.replaceChildren(h('button', { class: 'gbtn sm', onclick: load }, 'Load more')); box.append(more); if (io) { io.disconnect(); io.observe(more); } }
+      else if (io) io.disconnect();
+    } catch (e) { if (next === 0) box.replaceChildren(h('div', { class: 'empty' }, h('span', { style: 'display:block', html: ICONS.lock }), e.message)); else { more.replaceChildren(h('button', { class: 'gbtn sm', onclick: load }, 'Retry')); toast(e.message); } }
+    finally { busy = false; }
+  }
+  load();
+}
+function openLikes(p) {
+  const list = h('div', { class: 'scroll list' });
+  sheet('Likes', list);
+  pagedList('/api/posts/' + p.id + '/likes', list, 'No likes yet');
+}
+
 // ------------------------------------------------------------------ post card
 function postCard(p, opts) {
   opts = opts || {};
   const likeBtn = h('button', { class: 'icon-btn' + (p.liked ? ' liked' : ''), 'aria-label': 'Like', html: p.liked ? ICONS.heartF : ICONS.heart });
   const saveBtn = h('button', { class: 'icon-btn', 'aria-label': 'Save', html: p.saved ? ICONS.saveF : ICONS.save });
-  const likeTxt = () => p.likes == null ? (p.liked ? 'Liked by you and others' : 'Liked by others') : fmt(p.likes) + (p.likes === 1 ? ' like' : ' likes');
-  const likesEl = h('div', { class: 'likes' }, likeTxt());
+  const likeTxt = () => {
+    if (p.likes == null) return [p.liked ? 'Liked by you and others' : 'Liked by others'];
+    const others = (n) => n.toLocaleString('en-IN') + (n === 1 ? ' other' : ' others');
+    if (p.liked && p.likes > 1) return ['Liked by ', h('b', null, 'you'), ' and ', h('b', null, others(p.likes - 1))];
+    if (!p.liked && p.likedBy && p.likes > 1) return ['Liked by ', h('b', null, p.likedBy), ' and ', h('b', null, others(p.likes - 1))];
+    return [fmt(p.likes) + (p.likes === 1 ? ' like' : ' likes')];
+  };
+  const likesEl = h('div', { class: 'likes tap', onclick: () => { if (p.likes) openLikes(p); } });
+  const paintLikes = () => likesEl.replaceChildren(...likeTxt()); paintLikes();
   async function setLike(v) {
     if (p.liked === v) return; p.liked = v; if (p.likes != null) p.likes += v ? 1 : -1;
     likeBtn.className = 'icon-btn' + (v ? ' liked' : ''); likeBtn.innerHTML = v ? ICONS.heartF : ICONS.heart;
-    likesEl.textContent = likeTxt();
-    try { const d = v ? await POST('/api/posts/' + p.id + '/like') : await DEL('/api/posts/' + p.id + '/like'); p.likes = d.likes; likesEl.textContent = likeTxt(); }
+    paintLikes();
+    try { const d = v ? await POST('/api/posts/' + p.id + '/like') : await DEL('/api/posts/' + p.id + '/like'); p.likes = d.likes; paintLikes(); }
     catch (e) { toast(e.message); }
   }
   likeBtn.onclick = () => { vib(); setLike(!p.liked); };
@@ -709,9 +743,9 @@ function profileMenu(u) {
 }
 addRoute(/^#\/u\/([a-z0-9._]+)\/(followers|following)$/, async (username, list) => {
   const box = h('div', { class: 'list glass' }, spinner());
-  GET('/api/users/' + username + '/' + list).then(d => box.replaceChildren(...(d.users.length ? d.users.map(userRow) : [h('div', { class: 'empty' }, 'Nobody here yet')])))
-    .catch(e => box.replaceChildren(h('div', { class: 'empty' }, h('span', { style: 'display:block', html: ICONS.lock }), e.message)));
-  return pageWrap(topbar(list === 'followers' ? 'Followers' : 'Following', { back: true }), h('main', { class: 'view' }, box));
+  const count = h('p', { class: 'sub fine list-count' }, '');
+  pagedList('/api/users/' + username + '/' + list, box, 'Nobody here yet', (n) => { count.textContent = n.toLocaleString('en-IN') + ' ' + (list === 'followers' ? (n === 1 ? 'follower' : 'followers') : 'following'); });
+  return pageWrap(topbar(list === 'followers' ? 'Followers' : 'Following', { back: true }), h('main', { class: 'view' }, h('div', { class: 'uname-head' }, '@' + username), count, box));
 }, { tab: 'profile' });
 const ACCENT_CHOICES = ['', '#a78bfa', '#22d3ee', '#f472b6', '#34d399', '#fbbf24', '#fb7185', '#60a5fa', '#f97316'];
 addRoute(/^#\/edit$/, async () => {
@@ -921,7 +955,7 @@ addRoute(/^#\/about$/, async () => {
   };
   logo.addEventListener('pointerup', up); logo.addEventListener('pointerleave', () => { clearTimeout(holdT); holdT = null; });
   return pageWrap(topbar('About', { back: true }), h('main', { class: 'view' }, h('div', { class: 'about glass' },
-    logo, h('div', { class: 'ver' }, 'Version ' + (state.version || '1.1.0')),
+    logo, h('div', { class: 'ver' }, 'Version ' + (state.version || '1.2.0')),
     h('p', null, 'A liquid glass photo-sharing app: posts, stories that vanish after 24 hours, Close Friends, reels, likes, comments, saves, notifications, private accounts and real-time direct messages.'),
     h('p', null, h('b', { style: 'color:var(--text)' }, 'Educational project by Tech Bro Z, not affiliated with Instagram/Meta.'), ' Built for learning. All names, logos and designs here are original.'),
     h('p', null, 'YouTube: @techbrozdeveloper · Instagram: @tech_bro_z_1'),
@@ -994,7 +1028,7 @@ addRoute(/^#\/settings$/, async () => {
       linkRow('lock', 'Password and security', 'Change password, login activity, devices', '#/settings/security'),
       linkRow('user', 'Your account', 'Download your data, deactivate or delete', '#/settings/account')),
     section('About',
-      linkRow('menu', 'About Private Insta', 'Version ' + (state.version || '1.1.0'), '#/about')),
+      linkRow('menu', 'About Private Insta', 'Version ' + (state.version || '1.2.0'), '#/about')),
     h('button', { class: 'gbtn block logout', onclick: async () => { await POST('/api/logout').catch(() => {}); state.me = null; state.es && state.es.close(); go('#/login'); } }, 'Log out ' + me.username));
 }, { tab: 'profile' });
 
@@ -1165,7 +1199,8 @@ addRoute(/^#\/admin$/, async () => {
   let tab = 'stats';
   const body = h('div');
   const segEl = h('div', { class: 'seg glass mini admin-seg' });
-  const drawSeg = () => segEl.replaceChildren(...[['stats', 'Stats'], ['users', 'Users'], ['posts', 'Posts'], ['stories', 'Stories'], ['comments', 'Comments']].map(([k, l]) => h('button', { class: tab === k ? 'on' : '', onclick: () => { tab = k; drawSeg(); draw(); } }, l)));
+  const drawSeg = () => segEl.replaceChildren(...[['stats', 'Stats'], ['users', 'Users'], ['bots', 'Bots 🤖'], ['posts', 'Posts'], ['stories', 'Stories'], ['comments', 'Comments']].map(([k, l]) => h('button', { class: tab === k ? 'on' : '', onclick: () => { tab = k; drawSeg(); draw(); } }, l)));
+  const fmtN = (n) => Number(n || 0).toLocaleString('en-IN');
   const num = (msg, def) => { const v = prompt(msg, def == null ? '' : String(def)); if (v == null || v.trim() === '') return null; const n = Number(v); if (!Number.isFinite(n)) { toast('Enter a number'); return null; } return n; };
   const act = async (fn, okMsg) => { try { await fn(); if (okMsg) toast(okMsg); draw(); } catch (e) { toast(e.message); if (/locked/.test(e.message)) { const pw = await askPassword('Admin', 'Session expired — confirm your password', 'Unlock'); if (pw) { await POST('/api/admin/unlock', { password: pw }).catch(x => toast(x.message)); draw(); } } } };
   async function draw() {
@@ -1173,7 +1208,7 @@ addRoute(/^#\/admin$/, async () => {
     try {
       if (tab === 'stats') {
         const { stats } = await GET('/api/admin/stats');
-        const lbl = { users: 'Users', activeToday: 'Active today', onlineNow: 'Online now', posts: 'Photo posts', reels: 'Reels', stories: 'Live stories', comments: 'Comments', messages: 'Messages', likes: 'Real likes', privateAccounts: 'Private accounts', suspended: 'Suspended' };
+        const lbl = { users: 'Real users', bots: 'Bot accounts', activeToday: 'Active today', onlineNow: 'Online now', posts: 'Photo posts', reels: 'Reels', stories: 'Live stories', comments: 'Comments', messages: 'Messages', likes: 'Real likes', botFollows: 'Bot follows', botLikes: 'Bot likes', botComments: 'Bot comments', privateAccounts: 'Private accounts', suspended: 'Suspended' };
         body.replaceChildren(h('div', { class: 'stat-grid' }, ...Object.entries(lbl).map(([k, l]) => h('div', { class: 'glass stat' }, h('b', null, fmt(stats[k] || 0)), h('small', null, l)))),
           h('button', { class: 'gbtn block dangerb', style: 'margin-top:14px', onclick: () => { if (confirm('Reset ALL boosts (followers, likes, comments, views) to 0?')) act(() => POST('/api/admin/reset-boosts', {}), 'All boosts reset'); } }, 'Reset all boosts to 0'));
       } else if (tab === 'users') {
@@ -1183,23 +1218,33 @@ addRoute(/^#\/admin$/, async () => {
           const d = await GET('/api/admin/users?q=' + encodeURIComponent(q.value.trim()));
           list.replaceChildren(...d.users.map(u => h('div', { class: 'arow' },
             h('div', { class: 'srow' }, avatar(u), h('div', { class: 'st' }, h('b', null, u.username, u.verified ? h('span', { style: 'display:inline-flex', html: ICONS.verified }) : null, u.admin ? ' 👑' : '', u.suspended ? ' ⛔' : '', u.private ? ' 🔒' : ''),
-              h('small', null, u.posts + ' posts · ' + u.realFollowers + ' real + ' + u.bonusFollowers + ' boost = ' + u.shownFollowers + ' followers'))),
+              h('small', null, u.posts + ' posts · ' + fmtN(u.realFollowers) + ' real + ' + fmtN(u.botFollowers) + ' bots' + (u.extraFollowers ? ' + ' + fmtN(u.extraFollowers) : '') + ' = ' + fmtN(u.shownFollowers) + ' followers'))),
             h('div', { class: 'abtns' },
               h('button', { class: 'gbtn sm', onclick: () => act(() => PUT('/api/admin/users/' + u.username, { verified: !u.verified }), u.verified ? 'Badge removed' : 'Blue badge given ✔') }, u.verified ? 'Remove badge' : 'Verify ✔'),
-              h('button', { class: 'gbtn sm primary', onclick: () => { const n = num('Add how many followers to ' + u.username + '?', 100); if (n != null) act(() => PUT('/api/admin/users/' + u.username, { addFollowers: n }), 'Followers boosted'); } }, '+ Followers'),
-              h('button', { class: 'gbtn sm', onclick: () => { const n = num('Set follower boost for ' + u.username + ' (0 = none)', u.bonusFollowers); if (n != null) act(() => PUT('/api/admin/users/' + u.username, { bonusFollowers: n }), 'Boost set'); } }, 'Set boost'),
+              h('button', { class: 'gbtn sm primary', onclick: () => { const n = num('Add how many bot followers to ' + u.username + '? (max 10,000 at a time)', 100); if (n != null) act(() => PUT('/api/admin/users/' + u.username, { addFollowers: n }), fmtN(n) + ' followers added (with names)'); } }, '+ Followers'),
+              h('button', { class: 'gbtn sm', onclick: () => { const n = num('Set bot followers for ' + u.username + ' (0 = remove all bots; real followers stay)', u.bonusFollowers); if (n != null) act(() => PUT('/api/admin/users/' + u.username, { bonusFollowers: n }), 'Boost set to ' + fmtN(n)); } }, 'Set boost'),
               h('button', { class: 'gbtn sm', onclick: () => act(() => POST('/api/admin/reset-boosts', { username: u.username }), 'Boosts reset for ' + u.username) }, 'Reset boosts'),
               u.admin ? null : h('button', { class: 'gbtn sm', onclick: () => { if (confirm((u.suspended ? 'Unsuspend ' : 'Suspend ') + u.username + '?')) act(() => PUT('/api/admin/users/' + u.username, { suspended: !u.suspended }), u.suspended ? 'Unsuspended' : 'Suspended'); } }, u.suspended ? 'Unsuspend' : 'Suspend'),
               u.admin || u.demo ? null : h('button', { class: 'gbtn sm dangerb', onclick: () => { if (confirm('Delete ' + u.username + ' and everything they posted? This cannot be undone.')) act(() => DEL('/api/admin/users/' + u.username), 'Account deleted'); } }, 'Delete')))));
         };
         let t; q.oninput = () => { clearTimeout(t); t = setTimeout(() => load().catch(e => toast(e.message)), 250); };
         await load(); body.replaceChildren(q, list);
+      } else if (tab === 'bots') {
+        const d = await GET('/api/admin/bots');
+        const head = h('div', { class: 'glass bot-head' }, h('b', null, fmtN(d.total) + ' bot accounts'),
+          h('small', null, 'Bots are created automatically when you boost. They have names + photos, show up in followers / likes lists and search, but cannot log in, post or message anyone. Max ' + fmtN(d.actionCap) + ' per action, ' + fmtN(d.poolCap) + ' per account.'));
+        const boosted = h('div', { class: 'list glass slist' }, ...(d.boosted.length ? d.boosted.map(u => h('div', { class: 'arow' },
+          h('div', { class: 'srow' }, avatar(u), h('div', { class: 'st' }, h('b', null, u.username), h('small', null, '🤖 ' + fmtN(u.botFollowers) + ' bot followers · ' + fmtN(u.realFollowers) + ' real' + (u.botLikes ? ' · ❤ ' + fmtN(u.botLikes) + ' bot likes' : '') + (u.botComments ? ' · 💬 ' + u.botComments : '')))),
+          h('div', { class: 'abtns' }, h('a', { class: 'gbtn sm', href: '#/u/' + u.username + '/followers' }, 'See followers'),
+            h('button', { class: 'gbtn sm dangerb', onclick: () => { if (confirm('Remove ALL bots from ' + u.username + '? (bot followers, bot likes and bot comments). Real followers stay.')) act(() => DEL('/api/admin/users/' + u.username + '/bots'), 'Bots removed from ' + u.username); } }, 'Remove all bots from this user')))) : [h('div', { class: 'empty' }, 'No one has bot followers yet. Use + Followers in the Users tab.')]));
+        const bl = h('div', { class: 'list glass slist' }, ...d.bots.map(b => h('div', { class: 'srow' }, avatar(b), h('div', { class: 'st' }, h('b', null, b.username, b.private ? ' 🔒' : ''), h('small', null, b.name + (b.bio ? ' · ' + b.bio : ''))))));
+        body.replaceChildren(head, h('div', { class: 'section-t' }, 'Users with bots'), boosted, h('div', { class: 'section-t' }, 'Newest bots' + (d.total > d.bots.length ? ' (showing ' + d.bots.length + ')' : '')), d.bots.length ? bl : h('div', { class: 'empty' }, 'No bots yet'));
       } else if (tab === 'posts') {
         const d = await GET('/api/admin/posts');
         const boost = (p, k, label) => h('button', { class: 'gbtn sm primary', onclick: () => { const n = num('Add how many ' + label + '?', 100); if (n != null) act(() => PUT('/api/admin/posts/' + p.id, { ['add' + k]: n }), label + ' boosted'); } }, '+ ' + label);
         body.replaceChildren(h('div', { class: 'list glass slist' }, ...(d.posts.length ? d.posts.map(p => h('div', { class: 'arow' },
           h('div', { class: 'srow' }, h('a', { href: '#/p/' + p.id }, p.type === 'video' ? h('video', { class: 'thumb', src: p.media + '#t=0.5', muted: true, preload: 'metadata' }) : h('img', { class: 'thumb', src: p.media, alt: '' })),
-            h('div', { class: 'st' }, h('b', null, p.user + (p.type === 'video' ? ' · Reel' : '')), h('small', null, '❤ ' + p.realLikes + '+' + p.bonusLikes + ' · 💬 ' + p.realComments + '+' + p.bonusComments + ' · 👁 ' + p.realViews + '+' + p.bonusViews), h('small', null, p.caption))),
+            h('div', { class: 'st' }, h('b', null, p.user + (p.type === 'video' ? ' · Reel' : '')), h('small', null, '❤ ' + fmtN(p.realLikes) + ' real + ' + fmtN(p.bonusLikes) + ' bots · 💬 ' + p.realComments + ' + ' + p.bonusComments + ' bots · 👁 ' + fmtN(p.realViews) + ' + ' + fmtN(p.bonusViews)), h('small', null, p.caption))),
           h('div', { class: 'abtns' }, boost(p, 'Likes', 'Likes'), boost(p, 'Views', 'Views'), boost(p, 'Comments', 'Comments'),
             h('button', { class: 'gbtn sm', onclick: () => act(() => PUT('/api/admin/posts/' + p.id, { bonusLikes: 0, bonusViews: 0, bonusComments: 0 }), 'Boosts reset') }, 'Reset'),
             h('button', { class: 'gbtn sm dangerb', onclick: () => { if (confirm('Delete this post?')) act(() => DEL('/api/admin/posts/' + p.id), 'Post deleted'); } }, 'Delete')))) : [h('div', { class: 'empty' }, 'No posts yet')])));
@@ -1221,7 +1266,7 @@ addRoute(/^#\/admin$/, async () => {
     }
   }
   drawSeg(); draw();
-  return pageWrap(topbar('Admin panel', { back: true }), h('main', { class: 'view settings' }, h('p', { class: 'sub fine' }, 'Boosts add to the numbers people see. Real follower/like/comment lists stay real.'), segEl, body));
+  return pageWrap(topbar('Admin panel', { back: true }), h('main', { class: 'view settings' }, h('p', { class: 'sub fine' }, 'Boosts add bot accounts with names + photos: they show in the followers list, “Liked by” and comments. Reset removes only bots, never real people.'), segEl, body));
 }, { tab: '' });
 
 render();

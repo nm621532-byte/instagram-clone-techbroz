@@ -374,3 +374,14 @@ select.field option{color:#111}
 .abtns .gbtn{flex:none}
 .srow .thumb{width:48px;height:48px;border-radius:10px;object-fit:cover;flex:none}
 .pad .hint{margin:8px 2px 0}
+
+/* ---------- v1.2: bots, liked-by, paged lists ---------- */
+.post-body .likes.tap{cursor:pointer}
+.post-body .likes b{font-weight:800}
+.more-row{display:flex;justify-content:center;padding:12px}
+.list-count{margin:2px 4px 10px}
+.uname-head{font-weight:700;margin:4px 4px 0;opacity:.8}
+.sheet .scroll.list{max-height:60vh;overflow-y:auto}
+.bot-head{padding:14px 16px;border-radius:18px;margin:0 0 12px;display:flex;flex-direction:column;gap:6px}
+.bot-head b{font-size:20px}
+a.gbtn{text-decoration:none;display:inline-flex;align-items:center}

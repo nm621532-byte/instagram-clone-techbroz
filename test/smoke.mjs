@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Private Insta (InstaGlass) smoke + security test, v1.1. Run before EVERY publish:
+// Private Insta (InstaGlass) smoke + security test, v1.2 (v1.1 + bot boosts). Run before EVERY publish:
 //   node test/smoke.mjs http://localhost:3000        (or the live URL)
 // Creates throwaway users (random names), exercises every feature, then tries IDOR / auth attacks that MUST fail.
 const BASE = (process.argv[2] || 'http://localhost:3000').replace(/\/$/, '');
@@ -294,7 +294,7 @@ async function waitFor(fn, ms = 6000) { const t = Date.now(); while (Date.now() 
   ok((await A.get('/api/users/' + ud)).status === 200, 'D visible again');
 
   console.log('— v1.1 admin panel is admin-only');
-  for (const [m, u] of [['GET', '/api/admin/stats'], ['GET', '/api/admin/users'], ['PUT', '/api/admin/users/' + ub], ['PUT', '/api/admin/posts/' + ppid], ['DELETE', '/api/admin/posts/' + ppid], ['POST', '/api/admin/reset-boosts']])
+  for (const [m, u] of [['GET', '/api/admin/stats'], ['GET', '/api/admin/users'], ['PUT', '/api/admin/users/' + ub], ['PUT', '/api/admin/posts/' + ppid], ['DELETE', '/api/admin/posts/' + ppid], ['POST', '/api/admin/reset-boosts'], ['GET', '/api/admin/bots'], ['DELETE', '/api/admin/users/' + ua + '/bots']])
     ok((await Bc.req(m, u, m === 'GET' ? undefined : { verified: true, addLikes: 5 })).status === 403, 'normal user: ' + m + ' ' + u + ' -> 403');
   ok((await Bc.post('/api/admin/unlock', { password: pw })).status === 403, 'normal user cannot unlock the admin panel');
   ok((await A.get('/api/posts/' + ppid)).status === 200, 'post untouched by those attempts');
@@ -308,10 +308,63 @@ async function waitFor(fn, ms = 6000) { const t = Date.now(); while (Date.now() 
     const realF = (await A.get('/api/users/' + ua + '/followers')).data.users.length;
     ok((await M.put('/api/admin/users/' + ua, { addFollowers: 100, verified: true })).data.user.bonusFollowers === 100, 'admin boosts A followers +100 and verifies A');
     const pv = (await C.get('/api/users/' + ua)).data.user; ok(pv.followers === realF + 100 && pv.verified === true, 'profile shows real followers + boost and the badge');
-    ok((await A.get('/api/users/' + ua + '/followers')).data.users.length === realF, 'real follower list stays real');
+    ok((await A.get('/api/users/' + ua + '/followers')).data.total === realF + 100, 'v1.2: followers list now holds the 100 boosted (bot) followers too');
     await M.put('/api/admin/posts/' + mp.data.post.id, { addLikes: 50, addViews: 1000, addComments: 7 });
     const bpv = (await Bc.get('/api/posts/' + mp.data.post.id)).data.post; ok(bpv.likes >= 51 && bpv.views === 1001 && bpv.comments === 7, 'admin boosts post likes/views/comments');
     ok((await M.post('/api/admin/reset-boosts', { username: ua })).status === 200 && (await Bc.get('/api/posts/' + mp.data.post.id)).data.post.views === 1, 'admin resets boosts to 0');
+    console.log('— v1.2 bot followers / likes / comments');
+    await M.post('/api/admin/reset-boosts', { username: ua });
+    const listAll = async (cl, path) => { let out = [], off = 0; for (let i = 0; i < 20 && off != null; i++) { const r = await cl.get(path + (path.includes('?') ? '&' : '?') + 'offset=' + off + '&limit=100'); if (r.status !== 200) return null; out = out.concat(r.data.users); off = r.data.next; } return out; };
+    const realList = await listAll(A, '/api/users/' + ua + '/followers'); const realIds = new Set(realList.map(u => u.id));
+    ok(realIds.size >= 1, 'A has real followers before boosting (' + realIds.size + ')');
+    const b50 = await M.put('/api/admin/users/' + ua, { addFollowers: 50 });
+    ok(b50.status === 200 && b50.data.user.botFollowers === 50 && b50.data.user.realFollowers === realIds.size, 'admin boosts A +50 bot followers (real count unchanged)');
+    ok((await A.get('/api/users/' + ua)).data.user.followers === realIds.size + 50, 'profile count = real + 50');
+    const boosted = await listAll(A, '/api/users/' + ua + '/followers'); const bots = boosted.filter(u => !realIds.has(u.id));
+    ok(boosted.length === realIds.size + 50 && bots.length === 50, 'followers list returns all real + 50 bot entries');
+    ok(bots.every(u => u.username && /^[a-z0-9._]{3,20}$/.test(u.username) && u.name && u.name.length >= 2), 'every bot entry has a name and a valid username');
+    ok(new Set(bots.map(u => u.username)).size === 50, 'bot usernames are unique');
+    ok(bots.some(u => u.avatar) && bots.every(u => !u.avatar || u.avatar.startsWith('/bot-avatar/')), 'bots carry generated avatars');
+    const av = bots.find(u => u.avatar); const avr = await fetch(BASE + av.avatar);
+    ok(avr.status === 200 && (avr.headers.get('content-type') || '').includes('image/svg+xml') && (await avr.text()).startsWith('<svg'), 'bot avatar image is served (SVG)');
+    ok(boosted.slice(0, realIds.size).every(u => realIds.has(u.id)), 'real followers are listed before bots');
+    const pg = await A.get('/api/users/' + ua + '/followers?offset=0&limit=20');
+    ok(pg.data.users.length === 20 && pg.data.next === 20 && pg.data.total === realIds.size + 50, 'followers list paginates (20 per page, next=20)');
+    const bname = bots[0].username;
+    ok((await new Client('x').post('/api/login', { username: bname, password: 'anything123' })).status === 401, 'a bot cannot log in');
+    ok((await C.get('/api/search?q=' + bname)).data.users.some(u => u.username === bname), 'bots appear in search like normal users');
+    ok(!(await M.get('/api/admin/users?q=' + bname)).data.users.some(u => u.username === bname), 'admin Users tab does not list bots');
+    const ab = await M.get('/api/admin/bots');
+    ok(ab.status === 200 && ab.data.total >= 50 && ab.data.boosted.some(u => u.username === ua && u.botFollowers === 50), 'admin Bots tab shows the pool and A with 50 bots');
+    const st = (await M.get('/api/admin/stats')).data.stats; ok(st.bots >= 50 && st.users < st.users + st.bots, 'stats count bots separately from real users');
+    ok((await Bc.put('/api/admin/users/' + ua, { addFollowers: 5 })).status === 403 && (await Bc.req('DELETE', '/api/admin/users/' + ua + '/bots')).status === 403, 'normal user cannot add/remove bots (403)');
+    ok((await M.put('/api/admin/users/' + ua, { addFollowers: 10001 })).status === 400, 'per-action cap (10,000) enforced');
+    ok((await M.put('/api/admin/users/' + ua, { bonusFollowers: 10 })).data.user.botFollowers === 10 && (await A.get('/api/users/' + ua)).data.user.followers === realIds.size + 10, 'set boost lower (10) removes 40 bots');
+    const after10 = await listAll(A, '/api/users/' + ua + '/followers'); ok([...realIds].every(i => after10.some(u => u.id === i)), 'lowering the boost kept every real follower');
+    ok((await M.post('/api/admin/reset-boosts', { username: ua })).status === 200, 'reset A boosts');
+    const afterReset = await listAll(A, '/api/users/' + ua + '/followers');
+    ok(afterReset.length === realIds.size && afterReset.every(u => realIds.has(u.id)), 'after reset only the real followers remain (real follows untouched)');
+    ok((await A.get('/api/users/' + ua)).data.user.followers === realIds.size, 'after reset profile count = real followers');
+    ok((await C.get('/api/users/' + ua)).data.user.locked === true && (await C.get('/api/users/' + ua + '/followers')).status === 403, 'private A: bot boosts do not open A to non-followers');
+    // likes + comments
+    const pidM = mp.data.post.id; const realLikes = (await Bc.get('/api/posts/' + pidM)).data.post.likes;
+    const cBefore = new Set((await Bc.get('/api/posts/' + pidM + '/comments')).data.comments.map(c => c.id));
+    const notifCount = async () => { const r = await A.get('/api/notifications'); return r.status === 200 ? r.data.notifications.map(n => n.id).join(',') : null; };
+    const n0 = await notifCount();
+    ok((await M.put('/api/admin/posts/' + pidM, { addLikes: 30, addComments: 6 })).data.post.botLikes === 30, 'admin adds 30 bot likes + 6 bot comments');
+    const pv2 = (await Bc.get('/api/posts/' + pidM)).data.post; ok(pv2.likes === realLikes + 30 && typeof pv2.likedBy === 'string' && pv2.likedBy.length >= 3, 'post shows likes + "Liked by <name>"');
+    const likers = await listAll(Bc, '/api/posts/' + pidM + '/likes'); ok(likers && likers.length === realLikes + 30 && likers.filter(u => u.name).length === likers.length, '"Liked by" list shows all likers with names');
+    const cm = (await Bc.get('/api/posts/' + pidM + '/comments')).data.comments; const bc = cm.filter(c => !cBefore.has(c.id));
+    ok(bc.length === 6 && new Set(bc.map(c => c.user.username)).size === 6, '6 bot comments, each from a different bot');
+    ok(bc.every((c, i) => i === 0 || c.text !== bc[i - 1].text) && bc.every(c => c.text.length > 0), 'bot comment texts never repeat back-to-back');
+    ok(pv2.comments >= 6, 'comment count includes bot comments');
+    ok(n0 != null && (await notifCount()) === n0, 'bot likes/comments send no notifications');
+    ok((await Bc.put('/api/admin/posts/' + pidM, { addLikes: 5 })).status === 403 && (await Bc.put('/api/admin/posts/' + pidM, { addComments: 5 })).status === 403, 'normal user cannot add bot likes/comments (403)');
+    ok((await M.put('/api/admin/posts/' + pidM, { bonusLikes: 0, bonusComments: 0 })).status === 200, 'admin resets post likes/comments');
+    const pv3 = (await Bc.get('/api/posts/' + pidM)).data.post; ok(pv3.likes === realLikes && pv3.comments === pv2.comments - 6, 'reset removes only bot likes + bot comments');
+    ok((await Bc.get('/api/posts/' + pidM + '/likes')).data.total === realLikes, 'liked-by list back to real likers');
+    await M.put('/api/admin/users/' + ua, { addFollowers: 5 }); const rm = await M.req('DELETE', '/api/admin/users/' + ua + '/bots');
+    ok(rm.status === 200 && rm.data.removed.followers === 5 && rm.data.user.realFollowers === realIds.size, '"Remove all bots from this user" removes bots, keeps real followers');
     await M.put('/api/admin/users/' + ua, { verified: false });
     ok((await M.put('/api/admin/users/' + ud, { suspended: true })).status === 200 && (await D.get('/api/me')).status === 401, 'admin suspends D (logged out)');
     ok((await new Client('x').post('/api/login', { username: ud, password: pw })).status === 403, 'suspended D cannot log in');
