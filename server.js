@@ -10,7 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const VERSION = '1.5.0';
+const VERSION = '1.6.0';
 const APP_NAME = 'Private Insta';
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, 'data'));
@@ -1072,6 +1072,7 @@ function markReelSeen(me, pid) {
   if (!me.seenReels[pid]) { me.seenReels[pid] = now(); const k = Object.keys(me.seenReels); if (k.length > 3000) { k.sort((a, c) => me.seenReels[a] - me.seenReels[c]); for (const old of k.slice(0, k.length - 3000)) delete me.seenReels[old]; } save(); }
 }
 function seedHash(str) { let h = 2166136261; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } h ^= h >>> 13; h = Math.imul(h, 0x5bd1e995); h ^= h >>> 15; return h >>> 0; }
+const OWN_FIRST = 24, OWN_GAP = 20, OWN_MAX = 3; // v1.6: where your own posts may appear in a fresh Home mix
 function listPosts(filter, q, me, opts) {
   opts = opts || {};
   const limit = Math.min(parseInt(q.get('limit') || '12', 10) || 12, 30);
@@ -1092,7 +1093,19 @@ function listPosts(filter, q, me, opts) {
       const sa = seen(a), sc = seen(c); if (sa !== sc) return sa ? 1 : -1;
       return key.get(a.id) - key.get(c.id);
     });
-    return { posts: base.slice(offset, offset + limit).map(x => postView(x, me)), more: base.length > offset + limit, next: offset + limit, seed };
+    // v1.6: your own posts never stay pinned on top of Home. Right after you share, the app asks once with pin=<your new post id>
+    // (honoured for 30 min, your own post only); every refresh after that has no pin, so your posts sit deep in the mix
+    // (at most a few, from position OWN_FIRST on) and live on your profile, like Instagram.
+    let list = base;
+    const pinId = opts.pinOwn ? clean(q.get('pin') || '', 40) : '';
+    const pinned = pinId ? base.find(x => x.id === pinId && x.uid === me.id && now() - x.created < 30 * 60 * 1000) : null;
+    if (opts.demoteOwn) {
+      const mine = base.filter(x => x.uid === me.id && x !== pinned).sort((a, c) => key.get(a.id) - key.get(c.id)).slice(0, OWN_MAX);
+      list = base.filter(x => x.uid !== me.id);
+      mine.forEach((x, i) => { const at = OWN_FIRST + i * OWN_GAP; if (at <= list.length) list.splice(at, 0, x); else list.push(x); });
+    } else if (pinned) list = base.filter(x => x !== pinned);
+    if (pinned) list = [pinned].concat(list);
+    return { posts: list.slice(offset, offset + limit).map(x => postView(x, me)), more: list.length > offset + limit, next: offset + limit, seed };
   }
   const before = parseInt(q.get('before') || '0', 10) || Infinity;
   const rows = base.filter(x => x.created < before).sort((a, c) => c.created - a.created);
@@ -1101,10 +1114,11 @@ function listPosts(filter, q, me, opts) {
 route('GET', '/api/feed', true, async (req, res, b, me, p, q) => {
   const muted = L(me).mutedPosts, f = new Set(following(me.id).filter(x => !muted.includes(x)).concat(me.id));
   // v1.3: imported reels are mixed into everyone's home feed by time, so a brand-new account never sees an empty feed
-  send(res, 200, listPosts(x => f.has(x.uid) || (x.reel && !muted.includes(x.uid)), q, me, { freshFirst: x => f.has(x.uid) }));
+  // v1.6: only posts from people you follow get the "last 3 days on top" lift; your own posts are demoted (see listPosts)
+  send(res, 200, listPosts(x => f.has(x.uid) || (x.reel && !muted.includes(x.uid)), q, me, { freshFirst: x => f.has(x.uid) && x.uid !== me.id, demoteOwn: true, pinOwn: true }));
 });
 route('GET', '/api/explore', true, async (req, res, b, me, p, q) => send(res, 200, listPosts(x => x.uid !== me.id && !L(me).mutedPosts.includes(x.uid), q, me)));
-route('GET', '/api/reels', true, async (req, res, b, me, p, q) => send(res, 200, listPosts(x => x.type === 'video', q, me, { freshFirst: x => x.uid === me.id && now() - x.created < 3600 * 1000, preferUnseen: true })));
+route('GET', '/api/reels', true, async (req, res, b, me, p, q) => send(res, 200, listPosts(x => x.type === 'video', q, me, { pinOwn: true, preferUnseen: true })));
 route('GET', '/api/saved', true, async (req, res, b, me, p, q) => send(res, 200, listPosts(x => x.saves.includes(me.id), q, me)));
 // ---------------------------------------------------------------- v1.4 richer upload: edits, cover, tags, location, audience, music, drafts
 const FILTERS = ['normal', 'clarendon', 'gingham', 'moon', 'lark', 'reyes', 'juno', 'slumber', 'crema', 'ludwig', 'aden'];

@@ -505,6 +505,32 @@ async function waitFor(fn, ms = 6000) { const t = Date.now(); while (Date.now() 
     ok((await S.get('/api/reels?limit=3&seed=s1' + rnd + '&start=' + cf.id)).data.posts.every(x => x.id !== cf.id), 'start=<id> cannot reveal a post you may not see');
     const fd = (await Q.get('/api/feed?limit=5&seed=zz' + rnd)).data;
     ok(fd.posts.length > 0 && fd.posts[0].user.username === up, 'fresh home feed keeps new posts from people you follow on top');
+    // v1.6: your own new post is NOT pinned on top of your Home after a refresh (Noor: "refresh karne ke bad post hat jaaye")
+    await P.post('/api/users/' + ur + '/follow'); const rPosts = [];
+    for (let i = 0; i < 3; i++) rPosts.push((await R.post('/api/posts', { media: JPG, caption: 'R photo ' + i })).data.post.id, (await R.post('/api/posts', { kind: 'reel', media: MP4, caption: 'R reel ' + i })).data.post.id);
+    const mine = (await P.post('/api/posts', { media: JPG, caption: 'my fresh post v16' })).data.post;
+    const h1 = (await P.get('/api/feed?limit=30&seed=h1' + rnd + '&pin=' + mine.id)).data.posts;
+    ok(h1.length > 1 && h1[0].id === mine.id, 'right after sharing, Home shows your new post on top once (pin)');
+    const h1b = (await P.get('/api/feed?limit=30&seed=h1' + rnd + '&pin=' + mine.id + '&offset=30')).data.posts;
+    ok(!h1b.some(x => x.id === mine.id), '…and the pinned post is not repeated on the next page');
+    const h2 = (await P.get('/api/feed?limit=30&seed=h2' + rnd)).data.posts;
+    ok(h2.length > 1 && h2[0].id !== mine.id && h2[0].user.username !== up, 'refresh (new seed, GET feed again): your own new post is not at position 0');
+    const others2 = h2.filter(x => x.user.username !== up).length, ownIdx = h2.map((x, i) => x.user.username === up ? i : -1).filter(i => i >= 0);
+    ok(ownIdx.every(i => i >= Math.min(24, others2)), 'refresh: your own posts sit deep in the mix (not in the top ' + Math.min(24, others2) + ')');
+    const h3 = (await P.get('/api/feed?limit=30&seed=h3' + rnd)).data.posts;
+    ok(h3[0].id !== mine.id && h3[0].user.username !== up, 'second refresh: still not on top');
+    ok(h2.filter(x => x.user.username === up).length <= 3, 'at most 3 of your own posts mixed into a fresh Home');
+    ok((await P.get('/api/users/' + up)).data.posts.some(x => x.id === mine.id), 'your new post is still on your profile');
+    const fq = (await Q.get('/api/feed?limit=5&seed=q16' + rnd)).data.posts;
+    ok(fq[0] && fq[0].user.username === up, 'followers still get your new post on top of their Home');
+    const sp = (await S.get('/api/feed?limit=5&seed=s16' + rnd + '&pin=' + mine.id)).data.posts;
+    ok(!sp.length || sp[0].id !== mine.id, "pin only works for your own post (someone else can't pin it)");
+    const qp = (await Q.get('/api/feed?limit=5&seed=q17' + rnd + '&pin=' + cf.id)).data.posts;
+    ok(!qp.some(x => x.id === cf.id), 'pin cannot reveal a post you may not see');
+    let mixed = false; for (const k of ['ra', 'rb', 'rc']) { const rr = (await P.get('/api/reels?limit=30&seed=' + k + rnd + '&t0=' + Date.now())).data.posts.map(x => x.user.username === up); const lastOwn = rr.lastIndexOf(true); if (rr.slice(0, lastOwn).includes(false)) mixed = true; }
+    ok(mixed, 'Reels refresh does not pin your own new reels as a block on top either');
+    let rDel = 0; for (const id of rPosts) if ((await R.del('/api/posts/' + id)).status === 200) rDel++;
+    ok((await P.del('/api/posts/' + mine.id)).status === 200 && rDel === rPosts.length, 'v1.6 test posts deleted');
     // hashtags
     const ht = await Q.get('/api/hashtags?q=v14test');
     ok(ht.status === 200 && ht.data.tags.some(x => x.tag === 'v14test' + rnd), '#hashtag suggestions come from public captions');

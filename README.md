@@ -1,7 +1,7 @@
-# Private Insta 🔒📸 — Instagram-style clone in Liquid Glass UI (v1.5)
+# Private Insta 🔒📸 — Instagram-style clone in Liquid Glass UI (v1.6)
 
 **Live:** https://instaglass-live.sites.tab.bot  ·  test login: `demo` / `demo1234` (or sign up — it takes 5 seconds)
-**Download v1.5:** [Android APK](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.5/InstaGlass-v1.5.apk) · [Web app ZIP](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.5/instaglass-web-v1.5.zip) · [All releases](https://github.com/nm621532-byte/instagram-clone-techbroz/releases)
+**Download v1.6:** [Android APK](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.6/InstaGlass-v1.6.apk) · [Web app ZIP](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.6/instaglass-web-v1.6.zip) · [All releases](https://github.com/nm621532-byte/instagram-clone-techbroz/releases)
 
 > ⚠️ **Disclaimer:** Educational project by **Tech Bro Z**, not affiliated with Instagram/Meta. Name, logo and design are original.
 > (The repo name stays `instagram-clone-techbroz`; the app was called InstaGlass in v1.0 and is **Private Insta** from v1.1.)
@@ -10,7 +10,10 @@
 <img src="docs/screenshots/v15_privacy_center.jpg" width="200"> <img src="docs/screenshots/v15_chat_lock.jpg" width="200"> <img src="docs/screenshots/v15_locked_folder.jpg" width="200"> <img src="docs/screenshots/v15_vanish.jpg" width="200">
 </p>
 
-## 🆕 v1.5 — Privacy update 🔒 (Hinglish)
+## 🆕 v1.6 — Home feed fix 🏠 (Hinglish)
+Post daalne ke baad apni post sirf ek baar Home ke upar dikhti hai. Refresh karo (Home dobara tap, app dobara kholo) to upar doosron ki nayi posts aati hain; apni post profile pe rehti hai aur feed mein kabhi-kabhi neeche. Followers ko aapki nayi post unke Home pe upar dikhti hai.
+
+## v1.5 — Privacy update 🔒 (Hinglish)
 - **Privacy Center** (Settings → Privacy Center): saari privacy settings ek jagah, simple English description ke saath.
 - **Chat Lock:** kisi bhi chat pe ••• (ya long-press) → *Lock chat*. Locked chats inbox se hat ke **Locked chats** folder mein chali jaati hain — sirf **Chat PIN** (4–6 digit) se khulti hain. 5 galat PIN = 5 minute lockout. PIN bhool gaye? Account password se naya PIN.
 - Locked chat ka notification sirf **"New message"** dikhata hai — na naam, na message.
@@ -149,7 +152,7 @@ Admin follower/like/comment boosts create **bot accounts** (flag `isBot`, no pas
 - Private accounts, blocks, Close Friends and hidden stories are checked on every read **and** on the media file URLs.
 - DMs are addressed as "me + other user"; DM photos are served only to the two people in that chat.
 - Uploads are checked by their real bytes and size; text is rendered as text + strict CSP; CSRF guard (`X-IG` header); no password hash in any response or data export.
-- `test/smoke.mjs` — **395 checks** (v1.5 adds 74 privacy checks: wrong PIN, lockout, locked chat not in the inbox API, outsiders can't read or lock a chat, vanish deletion, view-once 404, App Lock on other sessions; before that **321 checks** (the 70 from v1.0 + privacy, follow requests, Close Friends, block, DM permissions, comments off, hidden words, password change, sessions, export, deactivate, "another user cannot change my settings", admin-only APIs, and v1.2 bot boosts: list fills with named bots, pagination, reset keeps real follows, bot likes/comments, bots cannot log in; v1.3 reels import: 3 sample reels, idempotent re-run, non-admin 403, path traversal blocked, Range 206, posters, feed/reels/explore pagination; `IG_DESTRUCTIVE=1` also tests "delete all imported"; v1.4: Classic mode per user, editor validation, drafts owner-only (404 for others, files private), audience followers/close friends on post/feed/profile/media, tag notifications, music/hashtags, fresh reels order with no repeats, deep link start=<id>). Run it before every deploy:
+- `test/smoke.mjs` — **407 checks** (v1.6 adds 12 Home-feed checks: post, then GET feed twice → your own post is not at position 0 on the refresh, shown once via pin, followers still see it on top, pin only for your own post; v1.5 adds 74 privacy checks: wrong PIN, lockout, locked chat not in the inbox API, outsiders can't read or lock a chat, vanish deletion, view-once 404, App Lock on other sessions; before that **321 checks** (the 70 from v1.0 + privacy, follow requests, Close Friends, block, DM permissions, comments off, hidden words, password change, sessions, export, deactivate, "another user cannot change my settings", admin-only APIs, and v1.2 bot boosts: list fills with named bots, pagination, reset keeps real follows, bot likes/comments, bots cannot log in; v1.3 reels import: 3 sample reels, idempotent re-run, non-admin 403, path traversal blocked, Range 206, posters, feed/reels/explore pagination; `IG_DESTRUCTIVE=1` also tests "delete all imported"; v1.4: Classic mode per user, editor validation, drafts owner-only (404 for others, files private), audience followers/close friends on post/feed/profile/media, tag notifications, music/hashtags, fresh reels order with no repeats, deep link start=<id>). Run it before every deploy:
 ```bash
 node server.js &
 node test/smoke.mjs http://localhost:3000
@@ -175,9 +178,9 @@ release/         # SHA-256 of each signed APK
 .github/         # workflow that attaches the APK + ZIP to each release
 ```
 
-### Download (Release v1.5)
-- Android APK: https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.5/InstaGlass-v1.5.apk (mirror: https://instaglass-live.sites.tab.bot/InstaGlass-v1.5.apk) — installs over v1.4 / v1.3 / v1.2 / v1.1 / v1.0 (same signature, versionCode 6)
-- Web app ZIP: https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.5/instaglass-web-v1.5.zip
+### Download (Release v1.6)
+- Android APK: https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.6/InstaGlass-v1.6.apk (mirror: https://instaglass-live.sites.tab.bot/InstaGlass-v1.6.apk) — installs over v1.5 / v1.4 / … / v1.0 (same signature, versionCode 7)
+- Web app ZIP: https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.6/instaglass-web-v1.6.zip
 - APK SHA-256: `29a551cf1c66e4238bd3a041daf3529649084f712d7966e3f25819794ee2e83a`
 - Older: [v1.4](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/tag/v1.4) · [v1.3](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/tag/v1.3) · [v1.2](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/tag/v1.2) · [v1.1](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/tag/v1.1) · [v1.0](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/tag/v1.0)
 

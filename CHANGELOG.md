@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.6 — 2026-11-02 · Home feed fix 🏠
+- **Your own posts no longer stick to the top of Home.** Right after you share, your new post shows on top once (so you see it went up). On any refresh after that (tap Home again, reopen the app, pull a new mix) Home starts with posts from other people; your own posts sit deep in the mix (not in the first 24, at most 3) and always stay on your profile, like Instagram.
+- Root cause: v1.4's fresh Home order put "your own + followed posts from the last 3 days" on top of every refresh, so your newest post was always first. Now only posts from people you follow get that lift; your followers still see your new post on top of *their* Home.
+- Reels: your own new reels are no longer pinned on top of every Reels open for an hour (same once-after-sharing rule).
+- The "show once" pin is honoured only for your own post, only for 30 minutes, and never reveals a post you can't see. Server-side fix, so it works in the v1.5 app too.
+- Smoke test grows from 395 to 407 checks (post, then GET feed twice → own post not at position 0 on the refresh; pinned once; followers still see it on top; pin can't be abused).
+- Android app v1.6 (versionCode 7, same signing key — installs over v1.5).
+
 ## v1.5 — 2026-11-02 · Privacy update 🔒
 - **Privacy Center** (Settings → Privacy Center): every privacy control in one screen with plain-English descriptions.
 - **Chat Lock:** lock any chat (••• on a chat, or long-press it). Locked chats leave the inbox and live in a **Locked chats** folder that opens only with a 4–6 digit **Chat PIN**. The PIN is stored as a salted scrypt hash; 5 wrong tries lock it out for 5 minutes (counted on the account, so a new login doesn't reset it). Forgot PIN → reset with your account password.

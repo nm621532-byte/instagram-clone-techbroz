@@ -234,6 +234,7 @@ state.seeds = { home: Math.random().toString(36).slice(2, 10), reels: Math.rando
 function freshTab(k) {
   vib(12);
   state.seeds[k] = Math.random().toString(36).slice(2, 10);
+  if (k === 'home') state.justPosted = null; // v1.6: a refresh never re-pins your own post
   const top = () => { const r = document.querySelector('.reels'); if (r) r.scrollTo({ top: 0 }); window.scrollTo({ top: 0, behavior: 'smooth' }); };
   top(); state.freshPulse = k;
   setTimeout(render, window.scrollY > 40 ? 260 : 0);
@@ -651,12 +652,15 @@ addRoute(/^#\/?$/, async () => {
   storiesRow().then(r => page.querySelector('.stories-slot').replaceWith(r));
   feed.append(spinner());
   if (state.freshPulse === 'home') { state.freshPulse = null; page.querySelector('main').prepend(h('div', { class: 'fresh-pill' }, '✨ Fresh feed')); }
-  // v1.4: a "seed" gives a new mix every time Home is tapped again (your own + followed posts from the last days stay on top)
+  // v1.4: a "seed" gives a new mix every time Home is tapped again (followed posts from the last days stay on top)
+  // v1.6: your own new post shows on top ONCE, right after you share it; any refresh after that (tap Home again, reopen) doesn't pin it
   let offset = 0, loading = false, more = true; const seed = state.seeds.home;
+  const jp = state.justPosted; state.justPosted = null;
+  const pin = jp && Date.now() - jp.at < 10 * 60 * 1000 ? '&pin=' + encodeURIComponent(jp.id) : '';
   async function load() {
     if (loading || !more) return; loading = true;
     try {
-      const d = await GET('/api/feed?limit=8&seed=' + seed + '&offset=' + offset);
+      const d = await GET('/api/feed?limit=8&seed=' + seed + pin + '&offset=' + offset);
       feed.querySelector('.spinner') && feed.querySelector('.spinner').remove();
       if (!offset && !d.posts.length) feed.append(await suggestions(true));
       d.posts.forEach(p => feed.append(postCard(p)));
@@ -1075,7 +1079,7 @@ addRoute(/^#\/create(?:\/(post|reel|story))?$/, async (want) => {
       setProg(1, 'Done ✓');
       if (draftId && media.kind === 'image') DEL('/api/drafts/' + draftId).catch(() => {}); // image drafts are re-uploaded baked, so the draft copy goes
       toast((mode === 'reel' ? 'Reel shared 🎬' : 'Posted ✨') + (d.mentionBlocked && d.mentionBlocked.length ? ' (' + d.mentionBlocked.join(', ') + " doesn't allow mentions)" : ''));
-      prog.hidden = true; state.homeView = null; go('#/p/' + d.post.id);
+      prog.hidden = true; state.homeView = null; state.justPosted = { id: d.post.id, at: Date.now() }; go('#/p/' + d.post.id);
     } catch (e) { toast(e.message); prog.hidden = true; lock(false); }
   }
   state.cleanup = () => { if (prevAudio) prevAudio.pause(); if (mv && mv.pause) mv.pause(); };
