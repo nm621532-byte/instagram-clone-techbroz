@@ -49,6 +49,8 @@ const ICONS = {
   cover: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="3"/><path d="m4 16 5-5 4 4 2-2 5 5"/></svg>',
   wa: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.5a9.5 9.5 0 0 0-8.2 14.3L2.5 21.5l4.8-1.3A9.5 9.5 0 1 0 12 2.5zm0 17.3a7.8 7.8 0 0 1-4-1.1l-.3-.2-2.8.8.8-2.7-.2-.3A7.8 7.8 0 1 1 12 19.8zm4.3-5.8c-.2-.1-1.4-.7-1.6-.8s-.4-.1-.5.1-.6.8-.7.9-.3.2-.5.1a6.4 6.4 0 0 1-3.2-2.8c-.2-.4.2-.4.7-1.3a.4.4 0 0 0 0-.4l-.7-1.7c-.2-.5-.4-.4-.5-.4h-.5a.9.9 0 0 0-.7.3 2.8 2.8 0 0 0-.9 2.1 4.9 4.9 0 0 0 1 2.6 11.2 11.2 0 0 0 4.3 3.8c1.6.7 2.2.8 3 .6a2.6 2.6 0 0 0 1.7-1.2 2.1 2.1 0 0 0 .1-1.2c0-.1-.2-.2-.4-.3z"/></svg>',
   fb: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M13.5 21v-7.5H16l.4-3h-2.9V8.6c0-.9.3-1.5 1.5-1.5h1.6V4.4a21 21 0 0 0-2.3-.1c-2.3 0-3.8 1.4-3.8 3.9v2.3H8v3h2.5V21z"/></svg>',
+  finger: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 11v3.5c0 2 .6 3.8 1.6 5.3"/><path d="M8.6 9.4A3.5 3.5 0 0 1 15.5 11v2.5c0 1.4.2 2.7.7 4"/><path d="M5.6 7.4A7 7 0 0 1 19 11v1.5"/><path d="M8.5 13.5c0 2.6.8 5 2.2 7"/><path d="M5 11.2v1.3c0 1.8.4 3.5 1 5"/><path d="M8 3.6a9 9 0 0 1 10.5 1.6"/></svg>',
+  ghost: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M5 21V10a7 7 0 0 1 14 0v11l-2.3-1.6L14.4 21 12 19.4 9.6 21l-2.3-1.6z"/><circle cx="9.5" cy="10.5" r="1" fill="currentColor"/><circle cx="14.5" cy="10.5" r="1" fill="currentColor"/></svg>',
   draft: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4M9 13h6M9 17h4" stroke-linecap="round"/></svg>',
 };
 const icon = (n) => { const s = document.createElement('span'); s.style.display = 'contents'; s.innerHTML = ICONS[n]; return s; };
@@ -89,7 +91,8 @@ async function api(method, url, body) {
   let data = {}; try { data = await r.json(); } catch (e) {}
   // only the server's auth gate means "logged out"; other 401s (wrong current password, admin re-check) are normal errors
   if (r.status === 401 && data.error === 'Please log in' && !url.startsWith('/api/login') && !url.startsWith('/api/signup')) { state.me = null; go('#/login'); }
-  if (!r.ok) throw new Error(data.error || ('Error ' + r.status));
+  if (r.status === 423 && data.appLocked) showAppLock();                  // v1.5 App Lock: the server says this session is locked
+  if (!r.ok) { const err = new Error(data.error || ('Error ' + r.status)); err.status = r.status; err.data = data; throw err; }
   return data;
 }
 const GET = (u) => api('GET', u), POST = (u, b) => api('POST', u, b || {}), PUT = (u, b) => api('PUT', u, b), DEL = (u) => api('DELETE', u);
@@ -99,7 +102,8 @@ function vib(ms) { try { navigator.vibrate && navigator.vibrate(ms || 10); } cat
 function pickFile(accept) {
   return new Promise((res) => {
     const i = h('input', { type: 'file', accept, style: 'display:none' });
-    i.onchange = () => { res(i.files[0] || null); i.remove(); };
+    state.picking = true; setTimeout(() => { state.picking = false; }, 120000); // the file picker sends the app to the background: don't App-Lock mid-upload
+    i.onchange = () => { setTimeout(() => { state.picking = false; }, 1500); res(i.files[0] || null); i.remove(); };
     document.body.append(i); i.click();
   });
 }
@@ -139,7 +143,7 @@ applyClassic();
 function applyAccent(c) { if (c) document.documentElement.style.setProperty('--accent', c); else document.documentElement.style.removeProperty('--accent'); }
 applyTheme(); if (mq && mq.addEventListener) mq.addEventListener('change', () => applyTheme());
 async function refreshMe() {
-  try { const d = await GET('/api/me'); state.me = d.user; state.unreadDm = d.unreadDm; state.unreadNotif = d.unreadNotif; state.msgRequests = d.msgRequests || 0; state.followRequests = d.followRequests || 0; state.version = d.version; applyTheme(d.user.settings && d.user.settings.theme); applyClassic(!!(d.user.settings && d.user.settings.classic)); applyAccent(d.user.accent); updateBadges(); return true; }
+  try { const d = await GET('/api/me'); state.appLock = d.appLock || null; if (d.appLocked) showAppLock(); state.me = d.user; state.unreadDm = d.unreadDm; state.unreadNotif = d.unreadNotif; state.msgRequests = d.msgRequests || 0; state.followRequests = d.followRequests || 0; state.version = d.version; applyTheme(d.user.settings && d.user.settings.theme); applyClassic(!!(d.user.settings && d.user.settings.classic)); applyAccent(d.user.accent); updateBadges(); return true; }
   catch (e) { return false; }
 }
 function updateBadges() {
@@ -153,12 +157,16 @@ function connectStream() {
   state.es = es;
   es.onmessage = (e) => {
     let ev; try { ev = JSON.parse(e.data); } catch (x) { return; }
-    if (ev.type === 'dm') {
+    if (ev.type === 'dm' && ev.private) { // v1.5: locked / hidden chat -> "New message" only
+      if (state.chatRef && state.chatRef === ev.chat && state.chatHandler) state.chatHandler(ev);
+      else if (!ev.quiet) { toast('🔒 New message'); vib(20); }
+    } else if (ev.type === 'dm') {
       if (state.chatWith === ev.from && state.chatHandler) state.chatHandler(ev);
       else if (ev.request) { state.msgRequests = (state.msgRequests || 0) + 1; if (!ev.quiet) toast('📩 New message request from ' + ev.from); if (/^#\/inbox/.test(location.hash)) render(); }
-      else { state.unreadDm++; updateBadges(); if (!ev.quiet) { toast('💬 ' + ev.from + ': ' + (ev.message.kind === 'text' ? ev.message.text.slice(0, 60) : ev.message.kind === 'image' ? 'sent a photo' : 'shared a post')); vib(20); } if (location.hash === '#/inbox') render(); }
+      else { state.unreadDm++; updateBadges(); if (!ev.quiet) { toast('💬 ' + ev.from + ': ' + msgPreview(ev.message)); vib(20); } if (location.hash === '#/inbox') render(); }
     } else if ((ev.type === 'typing' || ev.type === 'seen' || ev.type === 'unsend') && state.chatHandler && state.chatWith === (ev.from || ev.by)) state.chatHandler(ev);
     else if (ev.type === 'dm_echo' && state.chatHandler && state.chatWith === ev.to) state.chatHandler(ev);
+    else if ((ev.type === 'vanished' || ev.type === 'opened' || ev.type === 'vanish') && state.chatHandler) state.chatHandler(ev);
     else if (ev.type === 'notif') { state.unreadNotif++; updateBadges(); }
   };
   es.onerror = () => { /* the browser reconnects on its own */ };
@@ -174,8 +182,9 @@ async function render() {
   const seq = ++renderSeq;
   const hash = location.hash || '#/';
   document.querySelectorAll('.overlay,.sv').forEach(o => o.remove());
-  state.chatWith = null; state.chatHandler = null;
+  state.chatWith = null; state.chatHandler = null; state.chatRef = null;
   if (state.cleanup) { try { state.cleanup(); } catch (e) {} state.cleanup = null; }
+  leavePrivateArea(hash);
   if (!state.me && !/^#\/(login|signup|about)/.test(hash)) { if (!(await refreshMe())) { if (seq === renderSeq) return go('#/login'); return; } connectStream(); }
   for (const r of routes) {
     const m = hash.match(r.re);
@@ -258,7 +267,7 @@ function authPage(mode) {
   const form = h('form', { onsubmit: submit }, u, mode === 'signup' ? n : null, p, err, btn);
   return h('div', { class: 'auth' },
     h('div', { class: 'card glass' },
-      h('h1', { class: 'logo' }, h('img', { src: '/icon.svg', alt: '' }), 'Private Insta'),
+      h('h1', { class: 'logo' }, h('img', { src: '/logo-v15.svg', alt: '' }), 'Private Insta'),
       h('p', { class: 'sub' }, mode === 'login' ? 'Share moments. Crystal clear.' : 'Sign up to see photos and stories from your friends.'),
       form,
       h('div', { class: 'or' }, 'OR'),
@@ -638,7 +647,7 @@ addRoute(/^#\/?$/, async () => {
     h('a', { class: 'icon-btn', href: '#/notifications', 'aria-label': 'Notifications', style: 'position:relative' }, h('span', { style: 'display:contents', html: ICONS.heart }), h('i', { class: 'dot-badge', 'data-badge': 'notif', hidden: !state.unreadNotif })),
     h('a', { class: 'icon-btn', href: '#/inbox', 'aria-label': 'Messages', style: 'position:relative' }, h('span', { style: 'display:contents', html: ICONS.msg }), h('i', { class: 'badge', 'data-badge': 'dm', hidden: !state.unreadDm }, String(state.unreadDm))),
   ];
-  const page = pageWrap(topbar(h('h1', { class: 'logo' }, h('img', { src: '/icon.svg', alt: '' }), 'Private Insta'), { right }), h('main', { class: 'view' }, h('div', { class: 'stories-slot' }), feed));
+  const page = pageWrap(topbar(h('h1', { class: 'logo' }, h('img', { src: '/logo-v15.svg', alt: '' }), 'Private Insta'), { right }), h('main', { class: 'view' }, h('div', { class: 'stories-slot' }), feed));
   storiesRow().then(r => page.querySelector('.stories-slot').replaceWith(r));
   feed.append(spinner());
   if (state.freshPulse === 'home') { state.freshPulse = null; page.querySelector('main').prepend(h('div', { class: 'fresh-pill' }, '✨ Fresh feed')); }
@@ -1214,24 +1223,223 @@ addRoute(/^#\/requests$/, async () => {
   return pageWrap(topbar('Follow requests', { back: true }), h('main', { class: 'view' }, box));
 }, { tab: '' });
 
+
+// ------------------------------------------------------------------ v1.5 privacy: PIN pad, Chat Lock, App Lock, native bridge (Android app)
+const NATIVE_ = () => window.PrivateInstaNative || null; // added by the Android app (fingerprint + screenshot block); absent on the web
+function nativeSecure(on) { try { if (NATIVE_() && NATIVE_().setSecure) NATIVE_().setSecure(!!on); } catch (e) {} }
+function wantSecure(extra) { nativeSecure(extra || !!(state.me && state.me.settings && state.me.settings.screenshotBlock)); }
+function msgPreview(m) {
+  if (!m) return '';
+  if (m.kind === 'system') return m.text;
+  if (m.viewOnce) return m.kind === 'video' ? '📹 View-once video' : '📷 View-once photo';
+  return m.kind === 'text' ? String(m.text).slice(0, 60) : m.kind === 'image' ? 'sent a photo' : m.kind === 'video' ? 'sent a video' : 'shared a post';
+}
+// full-screen number pad. submit(pin) resolves = done, throws = show the server's words (wrong PIN / tries left / lockout countdown)
+function pinPad(opts) {
+  return new Promise((resolve) => {
+    let pin = '', busy = false, lockT = null, done = false;
+    const dots = h('div', { class: 'pin-dots' });
+    const msg = h('div', { class: 'pin-msg' }, opts.sub || '');
+    const drawDots = () => dots.replaceChildren(...Array.from({ length: 6 }, (_, i) => h('i', { class: (i < pin.length ? 'on' : '') + (i >= 4 ? ' opt' : '') })));
+    const ov = h('div', { class: 'pin-ov' + (opts.lockscreen ? ' lockscreen' : ''), role: 'dialog', 'aria-label': opts.title });
+    const finish = (v) => { if (done) return; done = true; clearInterval(lockT); document.removeEventListener('keydown', onKey); ov.classList.add('out'); setTimeout(() => ov.remove(), 220); resolve(v); };
+    const okBtn = h('button', { class: 'pin-ok', type: 'button', disabled: true }, opts.okLabel || 'OK');
+    const setMsg = (t, bad) => { msg.textContent = t || ''; msg.classList.toggle('bad', !!bad); };
+    const lockout = (sec) => {
+      clearInterval(lockT); ov.classList.add('locked-out'); let left = sec;
+      const tick = () => { if (left <= 0) { clearInterval(lockT); ov.classList.remove('locked-out'); setMsg('Try again now'); return; } setMsg('Too many wrong tries. Try again in ' + (left > 90 ? Math.ceil(left / 60) + ' min' : left + ' s'), true); left--; };
+      tick(); lockT = setInterval(tick, 1000);
+    };
+    async function submit() {
+      if (busy || pin.length < 4 || ov.classList.contains('locked-out')) return;
+      busy = true; ov.classList.add('busy');
+      try { const v = await opts.submit(pin); finish(v === undefined ? pin : v); }
+      catch (e) {
+        vib(60); dots.classList.remove('shake'); dots.offsetWidth; dots.classList.add('shake'); pin = ''; drawDots(); okBtn.disabled = true;
+        if (e.data && e.data.lockedOut) lockout(e.data.retryAfter || 60); else setMsg(e.message, true);
+      } finally { busy = false; ov.classList.remove('busy'); }
+    }
+    const press = (k) => {
+      if (busy || ov.classList.contains('locked-out')) return;
+      if (k === '⌫') pin = pin.slice(0, -1); else if (/^\d$/.test(k) && pin.length < 6) { pin += k; vib(8); }
+      drawDots(); okBtn.disabled = pin.length < 4;
+      if (pin.length === 6) submit();
+    };
+    const onKey = (e) => { if (/^\d$/.test(e.key)) press(e.key); else if (e.key === 'Backspace') press('⌫'); else if (e.key === 'Enter') submit(); else if (e.key === 'Escape' && opts.cancel !== false) finish(null); };
+    document.addEventListener('keydown', onKey);
+    okBtn.onclick = submit;
+    const keys = h('div', { class: 'pin-keys' }, ...['1', '2', '3', '4', '5', '6', '7', '8', '9'].map(k => h('button', { type: 'button', onclick: () => press(k) }, k)),
+      opts.extra ? h('button', { type: 'button', class: 'pin-x', onclick: async () => { try { const v = await opts.extra.run(); if (v) finish(v); } catch (e) { setMsg(e.message, true); } }, html: opts.extra.html, 'aria-label': opts.extra.label }) : h('span'),
+      h('button', { type: 'button', onclick: () => press('0') }, '0'),
+      h('button', { type: 'button', class: 'pin-del', onclick: () => press('⌫'), 'aria-label': 'Delete' }, '⌫'));
+    ov.append(h('div', { class: 'pin-box' },
+      opts.cancel === false ? null : h('button', { class: 'icon-btn pin-close', type: 'button', html: ICONS.close, 'aria-label': 'Cancel', onclick: () => finish(null) }),
+      opts.top || null,
+      h('div', { class: 'pin-ic', html: ICONS.lock }), h('h2', null, opts.title), dots, msg, keys, okBtn,
+      opts.foot || null));
+    drawDots(); document.body.append(ov);
+    if (opts.lockedOut) lockout(opts.lockedOut);
+    if (opts.autoExtra && opts.extra) setTimeout(() => keys.querySelector('.pin-x') && keys.querySelector('.pin-x').click(), 350);
+  });
+}
+async function createPin(kind) { // asks twice; returns the new PIN or null
+  const label = kind === 'app' ? 'App Lock PIN' : 'Chat PIN';
+  const first = await pinPad({ title: 'Create a ' + label, sub: '4 to 6 digits. ' + (kind === 'app' ? 'Asked every time Private Insta opens.' : 'Opens your locked and hidden chats.'), submit: async (p) => p });
+  if (!first) return null;
+  return pinPad({ title: 'Confirm your ' + label, sub: 'Type the same PIN again', submit: async (p) => { if (p !== first) throw new Error("PINs don't match — try again"); return p; } });
+}
+async function setupChatPin() {
+  const pin = await createPin('chat'); if (!pin) return false;
+  try { await POST('/api/chat-lock/pin', { pin }); toast('Chat PIN set 🔒'); return true; } catch (e) { toast(e.message); return false; }
+}
+// opens locked + hidden chats on this session (server keeps them open ~10 min; leaving the private area locks them again)
+async function unlockChats(title) {
+  const ok = await pinPad({ title: title || 'Enter Chat PIN', sub: 'Locked and hidden chats need your PIN', submit: (pin) => POST('/api/chat-lock/unlock', { pin }),
+    foot: h('button', { class: 'pin-forgot', type: 'button', onclick: async () => {
+      const pw = await askPassword('Forgot Chat PIN?', 'Enter your account password, then choose a new Chat PIN.', 'Continue'); if (!pw) return;
+      const pin = await createPin('chat'); if (!pin) return;
+      try { await POST('/api/chat-lock/pin', { pin, password: pw }); toast('New Chat PIN set ✓ — enter it now'); } catch (e) { toast(e.message); }
+    } }, 'Forgot PIN?') });
+  if (ok) state.chatArea = true;
+  return !!ok;
+}
+function leavePrivateArea(hash) {
+  if (state.chatArea && !/^#\/(inbox\/(locked|hidden)|dm\/)/.test(hash)) { state.chatArea = false; POST('/api/chat-lock/lock').catch(() => {}); }
+  if (!/^#\/dm\//.test(hash)) wantSecure(false);
+}
+async function chatFolderAction(username, action) { // action: lock | unlock | hide | unhide
+  try {
+    if ((action === 'lock' || action === 'hide') && !(await GET('/api/privacy')).chatPinSet) { toast('First create a Chat PIN'); if (!(await setupChatPin())) return false; }
+    const url = (action === 'lock' || action === 'unlock' ? '/api/chat-lock/chats/' : '/api/hidden-chats/') + encodeURIComponent(username);
+    const call = () => (action === 'lock' || action === 'hide') ? POST(url) : DEL(url);
+    try { await call(); } catch (e) { if (e.status === 423 && (await unlockChats())) await call(); else throw e; }
+    if (!state.chatArea) POST('/api/chat-lock/lock').catch(() => {}); // locking from the normal inbox: the folder asks for the PIN next time
+    toast({ lock: '🔒 Chat locked — find it in Locked chats', unlock: 'Chat unlocked — back in your inbox', hide: '🙈 Chat hidden — open it from Privacy Center → Hidden chats', unhide: 'Chat is visible again' }[action]);
+    return true;
+  } catch (e) { if (e.message) toast(e.message); return false; }
+}
+function chatMenu(username, d, onChange) { // ••• on a chat row / chat header
+  const f = d && d.folder;
+  const s = sheet('Chat options',
+    h('div', { class: 'scroll menu-list' },
+      f === 'locked' ? h('button', { class: 'mi', onclick: async () => { s.close(); if (await chatFolderAction(username, 'unlock')) onChange && onChange(); } }, '🔓 Unlock chat')
+        : h('button', { class: 'mi', onclick: async () => { s.close(); if (await chatFolderAction(username, 'lock')) onChange && onChange(); } }, '🔒 Lock chat', h('small', null, 'Move to Locked chats, opens with your Chat PIN')),
+      f === 'hidden' ? h('button', { class: 'mi', onclick: async () => { s.close(); if (await chatFolderAction(username, 'unhide')) onChange && onChange(); } }, '👁 Unhide chat')
+        : h('button', { class: 'mi', onclick: async () => { s.close(); if (await chatFolderAction(username, 'hide')) onChange && onChange(); } }, '🙈 Hide chat', h('small', null, 'Disappears from your inbox, opens with your Chat PIN')),
+      d && 'vanish' in d ? h('button', { class: 'mi', onclick: () => { s.close(); vanishSheet(username, d.vanish, onChange); } }, '👻 Vanish mode', h('small', null, d.vanish ? 'On — ' + VANISH_TXT[d.vanish.mode] : 'Off')) : null,
+      h('a', { class: 'mi', href: '#/u/' + username, onclick: () => s.close() }, '👤 View profile')));
+}
+const VANISH_TXT = { seen: 'messages disappear after they are seen', '1h': 'messages disappear after 1 hour', '24h': 'messages disappear after 24 hours' };
+function vanishSheet(username, cur, onChange) {
+  const mode = cur ? cur.mode : 'off';
+  const opt = (v, label, sub) => h('button', { class: 'mi' + (mode === v ? ' on' : ''), onclick: async () => {
+    s.close();
+    try { await PUT('/api/dm/' + encodeURIComponent(username) + '/vanish', { mode: v }); toast(v === 'off' ? 'Vanish mode off' : '👻 Vanish mode on'); onChange && onChange(); } catch (e) { toast(e.message); }
+  } }, label, sub ? h('small', null, sub) : null, mode === v ? h('b', { class: 'tick' }, '✓') : null);
+  const s = sheet('Vanish mode',
+    h('div', { class: 'scroll menu-list' },
+      h('p', { class: 'sub', style: 'text-align:left;margin:0 6px 10px' }, 'New messages delete themselves from the server. Both of you see a banner. Screenshots can\'t be detected on the web, so the chat blurs when the app goes to the background (the Android app also blocks screenshots in vanish chats).'),
+      opt('seen', 'After seen', 'Gone when they have seen it and leave the chat'), opt('1h', '1 hour', 'Deleted 1 hour after sending'), opt('24h', '24 hours', 'Deleted 24 hours after sending'), opt('off', 'Off', 'Messages stay')));
+}
+// view-once: the server sends the file once and deletes it; we show it from memory and forget it on close
+async function openViewOnce(m, onDone) {
+  let r; try { r = await POST('/api/messages/' + m.id + '/open'); } catch (e) { toast(e.message); onDone && onDone(); return; }
+  let blobUrl = r.data; // decode in memory (no network request; the page's security policy blocks fetch(data:))
+  try { const [hd, b64] = r.data.split(','); const bin = atob(b64); const arr = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i); blobUrl = URL.createObjectURL(new Blob([arr], { type: hd.slice(5).split(';')[0] })); } catch (e) {}
+  wantSecure(true);
+  const media = r.kind === 'video' ? h('video', { src: blobUrl, autoplay: true, playsinline: true, controls: false }) : h('img', { src: blobUrl, alt: 'view-once photo', draggable: 'false' });
+  media.addEventListener('contextmenu', (e) => e.preventDefault());
+  const close = () => { try { URL.revokeObjectURL(blobUrl); } catch (e) {} ov.remove(); onDone && onDone(); wantSecure(state.secureChat); };
+  const ov = h('div', { class: 'vo-viewer', onclick: (e) => { if (e.target === ov || e.target === media) close(); } },
+    h('div', { class: 'vo-top' }, h('span', null, r.kind === 'video' ? '📹 View-once video' : '📷 View-once photo'), h('button', { class: 'icon-btn', html: ICONS.close, onclick: close, 'aria-label': 'Close' })),
+    media, h('div', { class: 'vo-foot' }, 'Opens once. When you close it, it\'s gone from the server.'));
+  if (r.kind === 'video') media.onended = close;
+  document.body.append(ov);
+}
+// App Lock lock screen (sits above everything; the server refuses data until the PIN or fingerprint is right)
+async function showAppLock() {
+  if (state.appLockShown) return; state.appLockShown = true;
+  if (state.es) { try { state.es.close(); } catch (e) {} state.es = null; }
+  document.documentElement.classList.add('app-locked');
+  const bioKey = (() => { try { return NATIVE_() && NATIVE_().hasKey && NATIVE_().hasKey() ? true : false; } catch (e) { return false; } })();
+  const me = state.me || {};
+  const ok = await pinPad({ title: 'Private Insta is locked', sub: me.username ? 'Enter your App Lock PIN, @' + me.username : 'Enter your App Lock PIN', lockscreen: true, cancel: false,
+    submit: (pin) => POST('/api/app-lock/verify', { pin }),
+    extra: bioKey ? { label: 'Use fingerprint', html: ICONS.finger, run: bioUnlock } : null, autoExtra: bioKey,
+    foot: h('button', { class: 'pin-forgot', type: 'button', onclick: async () => { if (!confirm('Forgot your App Lock PIN? Log out and log in again with your password, then turn App Lock off in Privacy Center.')) return; await POST('/api/logout').catch(() => {}); location.hash = '#/login'; location.reload(); } }, 'Forgot PIN? Log out') });
+  state.appLockShown = false; document.documentElement.classList.remove('app-locked');
+  if (ok) { state.bgAt = 0; connectStream(); render(); }
+}
+function bioUnlock() { // Android app: fingerprint prompt -> device key -> server
+  return new Promise((resolve, reject) => {
+    const cb = '__bio' + Date.now();
+    window[cb] = async (okk, payload) => {
+      delete window[cb];
+      if (!okk) return reject(new Error(payload || 'Fingerprint not recognised'));
+      try { const k = JSON.parse(payload); await POST('/api/app-lock/bio-verify', { deviceId: k.deviceId, secret: k.secret }); resolve(true); } catch (e) { reject(e); }
+    };
+    try { NATIVE_().authenticate(cb); } catch (e) { delete window[cb]; reject(new Error('Fingerprint is not available')); }
+  });
+}
+// auto-lock after X minutes in the background + blur chats while the app is in the background
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { state.bgAt = Date.now(); document.documentElement.classList.add('bg-blur'); return; }
+  document.documentElement.classList.remove('bg-blur');
+  const al = state.appLock; if (!al || !state.me || state.appLockShown || state.picking) return;
+  const away = Date.now() - (state.bgAt || Date.now());
+  if (state.bgAt && away >= Math.max(5000, (al.minutes || 0) * 60000)) POST('/api/app-lock/lock').catch(() => {}).then(() => showAppLock());
+});
+window.addEventListener('blur', () => document.documentElement.classList.add('bg-blur'));
+window.addEventListener('focus', () => document.documentElement.classList.remove('bg-blur'));
+setInterval(() => { if (state.appLock && state.me && !document.hidden && !state.appLockShown) POST('/api/app-lock/alive').catch(() => {}); }, 60000);
+
 // ------------------------------------------------------------------ inbox + chat
-function convRows(list, empty) {
+function convRows(list, empty, folder) {
   return list.length ? list.map(c => {
-    const l = c.last; const prev = (l.mine ? 'You: ' : '') + (l.kind === 'text' ? l.text : l.kind === 'image' ? 'sent a photo' : 'shared a post');
-    return h('a', { class: 'row' + (c.unread ? ' unread' : ''), href: '#/dm/' + c.user.username }, ringed(c.user, 52),
-      h('div', { class: 'meta' }, h('b', null, c.user.name || c.user.username), h('small', null, prev.slice(0, 60) + ' · ' + ago(l.created))), c.unread ? h('i', { class: 'udot' }) : null);
+    const l = c.last; const prev = l.kind === 'system' ? l.text : (l.mine ? 'You: ' : '') + msgPreview(l);
+    const row = h('a', { class: 'row' + (c.unread ? ' unread' : ''), href: '#/dm/' + c.user.username }, ringed(c.user, 52),
+      h('div', { class: 'meta' }, h('b', null, c.user.name || c.user.username, l.vanish ? h('span', { class: 'vtag', title: 'Vanish mode' }, ' 👻') : null), h('small', null, prev.slice(0, 60) + ' · ' + ago(l.created))), c.unread ? h('i', { class: 'udot' }) : null,
+      h('button', { class: 'icon-btn row-more', type: 'button', html: ICONS.dots, 'aria-label': 'Chat options', onclick: (e) => { e.preventDefault(); e.stopPropagation(); chatMenu(c.user.username, { folder: folder || null }, render); } }));
+    // long-press a chat = same options (lock / hide), like Instagram
+    let pt; row.addEventListener('pointerdown', () => { pt = setTimeout(() => { vib(25); row.dataset.lp = '1'; chatMenu(c.user.username, { folder: folder || null }, render); }, 600); });
+    ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => row.addEventListener(ev, () => clearTimeout(pt)));
+    row.addEventListener('click', (e) => { if (row.dataset.lp) { e.preventDefault(); delete row.dataset.lp; } });
+    row.addEventListener('contextmenu', (e) => e.preventDefault());
+    return row;
   }) : [empty];
 }
+// v1.5: Locked chats / Hidden chats folders (PIN)
+function folderPage(kind) {
+  return async () => {
+    let d;
+    try { d = await GET('/api/inbox/' + kind); }
+    catch (e) {
+      if (e.status !== 423) { toast(e.message); return null; }
+      if (!(await unlockChats(kind === 'hidden' ? 'Hidden chats' : 'Locked chats'))) { history.length > 1 ? history.back() : go('#/inbox'); return null; }
+      try { d = await GET('/api/inbox/' + kind); } catch (x) { toast(x.message); return null; }
+    }
+    state.chatArea = true; wantSecure(true);
+    const info = kind === 'hidden' ? 'Hidden chats never show in your inbox. New messages here notify you as "New message" only.' : 'Locked chats open only with your Chat PIN. Notifications from them say "New message" — no name, no text.';
+    const box = h('div', { class: 'list glass' }, ...convRows(d.conversations, h('div', { class: 'empty' }, kind === 'hidden' ? 'No hidden chats. Use ••• on a chat → Hide chat.' : 'No locked chats. Use ••• on a chat → Lock chat.'), kind));
+    const lockNow = h('button', { class: 'gbtn sm', onclick: async () => { await POST('/api/chat-lock/lock').catch(() => {}); state.chatArea = false; toast('Locked 🔒'); go('#/inbox'); } }, 'Lock now');
+    return pageWrap(topbar(kind === 'hidden' ? '🙈 Hidden chats' : '🔒 Locked chats', { back: true, right: [lockNow] }), h('main', { class: 'view' }, h('p', { class: 'sub folder-info' }, info), box));
+  };
+}
+addRoute(/^#\/inbox\/locked$/, folderPage('locked'), { tab: '' });
+addRoute(/^#\/inbox\/hidden$/, folderPage('hidden'), { tab: '' });
 addRoute(/^#\/inbox$/, async () => {
   const box = h('div', { class: 'list glass' }, spinner());
   const reqLink = h('a', { class: 'req-link', href: '#/inbox/requests', hidden: true });
   const newBtn = h('button', { class: 'icon-btn', html: ICONS.edit, 'aria-label': 'New message', onclick: newMessage });
+  const lockedRow = h('div', { class: 'locked-slot' });
   GET('/api/inbox').then(d => {
     state.unreadDm = d.conversations.reduce((a, c) => a + c.unread, 0); updateBadges();
     if (d.requests) { reqLink.textContent = 'Requests (' + d.requests + ')'; reqLink.hidden = false; }
+    if (d.locked && d.locked.count) lockedRow.replaceChildren(h('a', { class: 'row locked-row', href: '#/inbox/locked' }, h('span', { class: 'lk-ic', html: ICONS.lock }),
+      h('div', { class: 'meta' }, h('b', null, 'Locked chats'), h('small', null, d.locked.count + (d.locked.count === 1 ? ' chat' : ' chats') + ' · opens with your Chat PIN')), d.locked.unread ? h('i', { class: 'udot' }) : null, h('span', { class: 'chev', html: ICONS.chev })));
     box.replaceChildren(...convRows(d.conversations, h('div', { class: 'empty' }, h('span', { style: 'display:block', html: ICONS.msg }), 'No messages yet', h('br'), h('button', { class: 'gbtn primary sm', style: 'margin-top:12px', onclick: newMessage }, 'Send message'))));
   }).catch(e => toast(e.message));
-  return pageWrap(topbar(state.me.username, { back: true, right: [newBtn] }), h('main', { class: 'view' }, h('div', { class: 'section-t inbox-h' }, h('span', null, 'Messages'), reqLink), box));
+  return pageWrap(topbar(state.me.username, { back: true, right: [newBtn] }), h('main', { class: 'view' }, lockedRow, h('div', { class: 'section-t inbox-h' }, h('span', null, 'Messages'), reqLink), box));
 }, { tab: '' });
 addRoute(/^#\/inbox\/requests$/, async () => {
   const box = h('div', { class: 'list glass' }, spinner());
@@ -1247,9 +1455,19 @@ async function newMessage() {
   input.oninput = q; q();
 }
 addRoute(/^#\/dm\/([a-z0-9._]+)$/, async (username) => {
-  let d; try { d = await GET('/api/dm/' + encodeURIComponent(username)); } catch (e) { toast(e.message); return pageWrap(topbar('Chat', { back: true }), h('main', { class: 'view' }, h('div', { class: 'empty' }, e.message))); }
+  let d; try { d = await GET('/api/dm/' + encodeURIComponent(username)); } catch (e) {
+    let err = e;
+    if (e.status === 423 && e.data && e.data.chatLocked) { // v1.5: locked / hidden chat -> Chat PIN, then open
+      if (await unlockChats(e.data.folder === 'hidden' ? 'Hidden chat' : 'Locked chat')) { try { d = await GET('/api/dm/' + encodeURIComponent(username)); err = null; } catch (x) { err = x; } }
+      else { history.length > 1 ? history.back() : go('#/inbox'); return null; }
+    }
+    if (err) { toast(err.message); return pageWrap(topbar('Chat', { back: true }), h('main', { class: 'view' }, h('div', { class: 'empty' }, err.message))); }
+  }
   const u = d.user;
-  const chat = h('div', { class: 'chat' });
+  if (d.folder) state.chatArea = true;
+  state.secureChat = !!(d.folder || d.vanish); wantSecure(state.secureChat); // Android app: no screenshots in locked / vanish chats
+  const chat = h('div', { class: 'chat' + (d.vanish ? ' vanish' : '') });
+  const expT = [];
   const lastSeenTxt = () => u.online ? 'Active now' : (u.lastActive ? 'Active ' + ago(u.lastActive) + ' ago' : '@' + u.username);
   const status = h('small', null, lastSeenTxt());
   const typingEl = h('div', { class: 'msg them typing', hidden: true }, h('i'), h('i'), h('i'));
@@ -1258,13 +1476,22 @@ addRoute(/^#\/dm\/([a-z0-9._]+)$/, async (username) => {
   function bubble(m) {
     const cls = 'msg ' + (m.mine ? 'me' : 'them');
     let el;
-    if (m.kind === 'image') el = h('div', { class: cls + ' media' }, h('img', { src: m.media, alt: 'photo', onclick: () => window.open(m.media, '_blank') }), m.text ? h('div', { class: 't' }, m.text) : null);
+    if (m.kind === 'system') { el = h('div', { class: 'msg-sys' }, h('span', { html: ICONS.ghost }), m.text); el.dataset.id = m.id; return el; }
+    if (m.viewOnce) { // v1.5 view-once bubble: no file link ever reaches the page until the receiver taps it (once)
+      const what = m.kind === 'video' ? 'Video' : 'Photo', ic = m.kind === 'video' ? '📹' : '📷';
+      const label = m.mine ? (m.opened ? 'Opened' : 'Delivered') : (m.opened ? 'Opened' : m.expired ? 'Expired' : 'Tap to view');
+      el = h('div', { class: cls + ' vonce' + (m.opened || m.expired ? ' used' : '') }, h('span', { class: 'vo-ic' }, ic), h('div', null, h('b', null, what + ' · view once'), h('small', null, label)));
+      if (!m.mine && !m.opened && !m.expired) el.onclick = () => { el.classList.add('used'); el.onclick = null; el.querySelector('small').textContent = 'Opening…'; openViewOnce(m, () => { el.querySelector('small').textContent = 'Opened'; }); };
+    }
+    else if (m.kind === 'image') el = h('div', { class: cls + ' media' }, h('img', { src: m.media, alt: 'photo', onclick: () => window.open(m.media, '_blank') }), m.text ? h('div', { class: 't' }, m.text) : null);
+    else if (m.kind === 'video') el = h('div', { class: cls + ' media' }, h('video', { src: m.media, controls: true, playsinline: true, preload: 'metadata' }));
     else if (m.kind === 'post') {
       el = h('div', { class: cls + ' media' }, m.post ? h('a', { class: 'shared', href: '#/p/' + m.post.id }, h('div', { class: 'sh-h' }, avatar(m.post.user), m.post.user.username),
         m.post.type === 'video' ? h('video', { src: m.post.media + '#t=0.5', muted: true, preload: 'metadata' }) : h('img', { src: m.post.media, alt: '' }), m.post.caption ? h('p', null, m.post.caption) : null) : h('div', { class: 't' }, 'Post unavailable'),
         m.text ? h('div', { class: 't' }, m.text) : null);
     } else el = h('div', { class: cls }, m.text);
     el.dataset.id = m.id;
+    if (m.vanish) { el.classList.add('vmsg'); if (m.expiresAt) expT.push(setTimeout(() => el.remove(), Math.max(0, m.expiresAt - Date.now()))); }
     if (m.mine) {
       let pt; const start = () => { pt = setTimeout(async () => { vib(30); if (confirm('Unsend this message?')) { try { await DEL('/api/messages/' + m.id); el.remove(); } catch (e) { toast(e.message); } } }, 550); };
       el.addEventListener('pointerdown', start); el.addEventListener('pointerup', () => clearTimeout(pt)); el.addEventListener('pointerleave', () => clearTimeout(pt));
@@ -1286,8 +1513,13 @@ addRoute(/^#\/dm\/([a-z0-9._]+)$/, async (username) => {
   if (!d.messages.length) chat.prepend(h('div', { class: 'empty' }, avatar(u, ''), h('div', { style: 'margin-top:10px;font-weight:700;color:var(--text)' }, u.name), '@' + u.username, h('br'), h('a', { class: 'gbtn sm', style: 'margin-top:10px', href: '#/u/' + u.username }, 'View profile')));
   const scrollDown = () => requestAnimationFrame(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }));
   let typingT;
-  state.chatWith = u.username;
+  state.chatWith = u.username; state.chatRef = d.chatRef;
+  const refetch = async () => { try { const r = await GET('/api/dm/' + encodeURIComponent(u.username)); r.messages.forEach(m => addMsg(m, true)); scrollDown(); } catch (e) {} };
   state.chatHandler = (ev) => {
+    if (ev.type === 'dm' && ev.private) { refetch(); return; }
+    if (ev.type === 'vanished') { (ev.ids || []).forEach(i => { const el = chat.querySelector('[data-id="' + i + '"]'); if (el) el.remove(); }); return; }
+    if (ev.type === 'opened') { const el = chat.querySelector('[data-id="' + ev.id + '"]'); if (el) { el.classList.add('used'); const s = el.querySelector('small'); if (s) s.textContent = 'Opened'; } return; }
+    if (ev.type === 'vanish') { if (ev.with === u.username) render(); return; }
     if (ev.type === 'dm') { typingEl.hidden = true; ev.message.mine = false; addMsg(ev.message, true); scrollDown(); if (!d.isRequest) POST('/api/dm/' + u.username + '/seen').catch(() => {}); status.textContent = u.lastActive !== null || u.online ? 'Active now' : '@' + u.username; }
     else if (ev.type === 'dm_echo') { addMsg(ev.message, true); scrollDown(); }
     else if (ev.type === 'typing') { typingEl.hidden = false; status.textContent = 'typing…'; clearTimeout(typingT); typingT = setTimeout(() => { typingEl.hidden = true; status.textContent = lastSeenTxt(); }, 3500); scrollDown(); }
@@ -1300,7 +1532,9 @@ addRoute(/^#\/dm\/([a-z0-9._]+)$/, async (username) => {
       try { const r = await GET('/api/dm/' + encodeURIComponent(u.username)); r.messages.forEach(m => addMsg(m, true)); const lm = r.messages.filter(m => m.mine).pop(); if (lm && lm.seen) { seenEl.textContent = 'Seen'; } } catch (e) {}
     }
   }, 4000);
-  state.cleanup = () => clearInterval(poll);
+  const closeVanish = () => { if (d.vanish && d.vanish.mode === 'seen') fetch('/api/dm/' + encodeURIComponent(u.username) + '/close', { method: 'POST', headers: { 'X-IG': '1' }, keepalive: true, credentials: 'same-origin' }).catch(() => {}); };
+  window.addEventListener('pagehide', closeVanish);
+  state.cleanup = () => { clearInterval(poll); expT.forEach(clearTimeout); window.removeEventListener('pagehide', closeVanish); closeVanish(); };
   const input = h('input', { placeholder: 'Message…', maxlength: 2000, enterkeyhint: 'send' });
   let lastTyping = 0;
   input.oninput = () => { if (Date.now() - lastTyping > 2000) { lastTyping = Date.now(); POST('/api/dm/' + u.username + '/typing').catch(() => {}); } };
@@ -1309,19 +1543,33 @@ addRoute(/^#\/dm\/([a-z0-9._]+)$/, async (username) => {
     try { const r = await POST('/api/dm/' + u.username, { text }); addMsg(r.message, true); scrollDown(); if (r.request) toast('Sent as a message request'); } catch (x) { toast(x.message); input.value = text; }
   };
   const bar = h('form', { class: 'chat-bar glass', onsubmit: sendText },
-    h('button', { type: 'button', class: 'cam', html: ICONS.cam, 'aria-label': 'Send photo', onclick: async () => {
-      const f = await pickFile('image/*'); if (!f) return;
-      try { toast('Sending photo…'); const m = await prepareMedia(f, 1280); if (m.kind !== 'image') throw new Error('Only photos in chat'); const r = await POST('/api/dm/' + u.username, { media: m.data }); addMsg(r.message, true); scrollDown(); } catch (x) { toast(x.message); }
+    h('button', { type: 'button', class: 'cam', html: ICONS.cam, 'aria-label': 'Send photo', onclick: () => {
+      const send = async (viewOnce) => {
+        s.close(); const f = await pickFile(viewOnce ? 'image/*,video/mp4,video/webm' : 'image/*'); if (!f) return;
+        try {
+          toast(viewOnce ? 'Sending view-once…' : 'Sending photo…'); const m = await prepareMedia(f, 1280);
+          if (m.kind !== 'image' && !viewOnce) throw new Error('Only photos in chat (videos can be sent as view once)');
+          const r = await POST('/api/dm/' + u.username, { media: m.data, viewOnce }); addMsg(r.message, true); scrollDown(); if (viewOnce) toast('Sent — it can be opened once 👁');
+        } catch (x) { toast(x.message); }
+      };
+      const s = sheet('Send',
+        h('div', { class: 'scroll menu-list' },
+          h('button', { class: 'mi', onclick: () => send(false) }, '🖼 Photo', h('small', null, 'Stays in the chat')),
+          h('button', { class: 'mi', onclick: () => send(true) }, '👁 View once — photo or video', h('small', null, 'Opens one time, then it is deleted from the server'))));
     } }), input, h('button', { class: 'send', type: 'submit' }, 'Send'));
   const head = h('a', { class: 'chat-head', href: '#/u/' + u.username, style: 'flex:1;min-width:0' }, ringed(u, 34), h('div', { style: 'min-width:0' }, h('b', null, u.name || u.username), status));
   let footer = bar;
+  const more = h('button', { class: 'icon-btn', type: 'button', html: ICONS.dots, 'aria-label': 'Chat options', onclick: () => chatMenu(u.username, d, render) });
+  const banner = d.vanish ? h('div', { class: 'vanish-banner' }, h('span', { html: ICONS.ghost }), h('div', null, h('b', null, 'Vanish mode'), h('small', null, (d.vanish.byMe ? 'You turned it on · ' : (u.username + ' turned it on · ')) + VANISH_TXT[d.vanish.mode])),
+    h('button', { class: 'gbtn sm', onclick: async () => { try { await PUT('/api/dm/' + u.username + '/vanish', { mode: 'off' }); render(); } catch (e) { toast(e.message); } } }, 'Turn off')) : null;
+  const lockTag = d.folder ? h('div', { class: 'lock-tag' }, d.folder === 'hidden' ? '🙈 Hidden chat · only you can find it with your PIN' : '🔒 Locked chat · opens only with your Chat PIN') : null;
   if (d.isRequest) footer = h('div', { class: 'chat-bar glass reqbar' }, h('div', { class: 'rq' }, h('b', null, (u.name || u.username) + ' wants to send you a message'), h('small', null, "They won't know you've seen it until you accept.")),
     h('div', { class: 'acts' },
       h('button', { class: 'gbtn sm', onclick: async () => { try { await POST('/api/users/' + u.username + '/block'); toast('Blocked'); go('#/inbox/requests'); } catch (e) { toast(e.message); } } }, 'Block'),
       h('button', { class: 'gbtn sm', onclick: async () => { if (!confirm('Delete this message request?')) return; try { await DEL('/api/dm/' + u.username + '/request'); toast('Request deleted'); go('#/inbox/requests'); } catch (e) { toast(e.message); } } }, 'Delete'),
       h('button', { class: 'gbtn sm primary', onclick: async () => { try { await POST('/api/dm/' + u.username + '/accept'); toast('Accepted'); render(); } catch (e) { toast(e.message); } } }, 'Accept')));
   else if (!d.canMessage) footer = h('div', { class: 'chat-bar glass reqbar' }, h('small', { style: 'margin:auto;color:var(--muted)' }, d.why || "You can't message this account"));
-  const page = pageWrap(topbar(head, { back: true }), h('main', null, chat), footer);
+  const page = pageWrap(topbar(head, { back: true, right: [more] }), h('main', null, lockTag, banner, chat), footer);
   state.unreadDm = 0; refreshMe();
   setTimeout(() => window.scrollTo(0, document.body.scrollHeight), 30);
   return page;
@@ -1329,7 +1577,7 @@ addRoute(/^#\/dm\/([a-z0-9._]+)$/, async (username) => {
 
 // ------------------------------------------------------------------ about (+ hidden admin entry)
 addRoute(/^#\/about$/, async () => {
-  const logo = h('h2', { class: 'logo about-logo', style: 'justify-content:flex-start' }, h('img', { src: '/icon.svg', alt: '', draggable: 'false' }), 'Private Insta');
+  const logo = h('h2', { class: 'logo about-logo', style: 'justify-content:flex-start' }, h('img', { src: '/logo-v15.svg', alt: '', draggable: 'false' }), 'Private Insta');
   // secret gesture: 5 quick taps on the logo, then a ~2 s long-press. Only an admin account (checked by the server) gets anywhere.
   let taps = [], armedUntil = 0, holdT = null, downAt = 0;
   logo.addEventListener('contextmenu', e => e.preventDefault());
@@ -1406,6 +1654,7 @@ addRoute(/^#\/settings$/, async () => {
   const me = state.me, s = me.settings;
   return settingsPage('Settings and privacy',
     h('a', { class: 'me-card glass', href: '#/edit' }, avatar(me), h('div', { class: 'st' }, h('b', null, me.name || me.username), h('small', null, '@' + me.username + ' · Edit profile')), h('span', { class: 'chev', html: ICONS.chev })),
+    h('a', { class: 'pc-link glass', href: '#/settings/privacy' }, h('span', { class: 'pc-ic', html: ICONS.shield }), h('div', { class: 'st' }, h('b', null, 'Privacy Center'), h('small', null, 'Chat Lock, App Lock, vanish mode, view once, hidden chats')), h('span', { class: 'chev', html: ICONS.chev })),
     section('Who can see your content',
       toggleRow('Private account', s.private ? 'Only followers you approve can see your posts, reels, stories and lists.' : 'Anyone can see your posts and reels. Turn on to approve every new follower.', s.private, async (v) => { await saveSetting({ private: v }); toast(v ? 'Your account is now private 🔒' : 'Your account is now public'); }),
       linkRow('user', 'Follow requests', 'Approve or delete', '#/requests', state.followRequests),
@@ -1427,8 +1676,80 @@ addRoute(/^#\/settings$/, async () => {
       linkRow('lock', 'Password and security', 'Change password, login activity, devices', '#/settings/security'),
       linkRow('user', 'Your account', 'Download your data, deactivate or delete', '#/settings/account')),
     section('About',
-      linkRow('menu', 'About Private Insta', 'Version ' + (state.version || '1.4.0'), '#/about')),
+      linkRow('menu', 'About Private Insta', 'Version ' + (state.version || '1.5.0'), '#/about')),
     h('button', { class: 'gbtn block logout', onclick: async () => { await POST('/api/logout').catch(() => {}); state.me = null; state.es && state.es.close(); go('#/login'); } }, 'Log out ' + me.username));
+}, { tab: 'profile' });
+
+
+// ------------------------------------------------------------------ v1.5 Privacy Center: every privacy control in one place
+addRoute(/^#\/settings\/privacy$/, async () => {
+  await refreshMe();
+  let p; try { p = await GET('/api/privacy'); } catch (e) { toast(e.message); return null; }
+  const s = p.settings;
+  const again = () => render();
+  const chatPinRows = p.chatPinSet ? [
+    linkRow('lock', 'Locked chats', p.lockedChats + (p.lockedChats === 1 ? ' chat' : ' chats') + ' · opens with your Chat PIN', '#/inbox/locked'),
+    linkRow('eye', 'Hidden chats', p.hiddenChats + (p.hiddenChats === 1 ? ' chat' : ' chats') + ' · not shown in your inbox at all', '#/inbox/hidden'),
+    h('button', { class: 'srow', onclick: async () => {
+      const cur = await pinPad({ title: 'Current Chat PIN', sub: 'Enter your current PIN first', submit: async (x) => x }); if (!cur) return;
+      const nw = await createPin('chat'); if (!nw) return;
+      try { await POST('/api/chat-lock/pin', { pin: nw, currentPin: cur }); toast('Chat PIN changed ✓'); } catch (e) { toast(e.message); }
+    } }, h('span', { class: 'sic', html: ICONS.edit }), h('div', { class: 'st' }, h('b', null, 'Change Chat PIN'), h('small', null, 'Forgot it? Use "Forgot PIN?" on the PIN screen (needs your password)'))),
+    h('button', { class: 'srow danger-row', onclick: async () => {
+      await pinPad({ title: 'Remove Chat PIN?', sub: 'All locked and hidden chats go back to your inbox', okLabel: 'Remove', submit: async (pin) => { const r = await api('DELETE', '/api/chat-lock/pin', { pin }); toast('Chat PIN removed · ' + r.released + ' chats back in your inbox'); } });
+      again();
+    } }, h('span', { class: 'sic', html: ICONS.trash }), h('div', { class: 'st' }, h('b', null, 'Remove Chat PIN'), h('small', null, 'Unlocks and unhides every chat'))),
+  ] : [h('button', { class: 'srow', onclick: async () => { if (await setupChatPin()) again(); } }, h('span', { class: 'sic', html: ICONS.lock }), h('div', { class: 'st' }, h('b', null, 'Create Chat PIN'), h('small', null, 'A 4–6 digit PIN for Chat Lock and Hidden chats')), h('span', { class: 'chev', html: ICONS.chev }))];
+  const al = p.appLock;
+  const appRows = [toggleRow('App Lock', al.on ? 'PIN is asked every time Private Insta opens — on every phone and browser you are logged in on.' : 'Ask for a PIN when the app opens.', al.on, async (v) => {
+    if (v) { const pin = await createPin('app'); if (!pin) throw new Error('cancelled'); await POST('/api/app-lock', { pin, minutes: 1 }); state.appLock = { minutes: 1, fingerprint: false }; toast('App Lock on 🔐'); again(); }
+    else { const ok = await pinPad({ title: 'Turn off App Lock', sub: 'Enter your App Lock PIN', okLabel: 'Turn off', submit: (pin) => api('DELETE', '/api/app-lock', { pin }) }); if (!ok) throw new Error('cancelled'); state.appLock = null; try { NATIVE_() && NATIVE_().clearKey && NATIVE_().clearKey(); } catch (e) {} toast('App Lock off'); again(); }
+  })];
+  if (al.on) {
+    appRows.push(choiceRow('Auto-lock', 'Lock again after the app has been in the background for', String(al.minutes), [['0', 'Now'], ['1', '1 min'], ['5', '5 min'], ['15', '15 min'], ['60', '1 h']], async (v) => { await PUT('/api/app-lock', { minutes: Number(v) }); state.appLock = Object.assign(state.appLock || {}, { minutes: Number(v) }); toast('Saved'); }));
+    const canBio = (() => { try { return !!(NATIVE_() && NATIVE_().isBiometricAvailable && NATIVE_().isBiometricAvailable()); } catch (e) { return false; } })();
+    const hasKey = (() => { try { return !!(NATIVE_() && NATIVE_().hasKey && NATIVE_().hasKey()); } catch (e) { return false; } })();
+    if (canBio) appRows.push(toggleRow('Unlock with fingerprint', 'Uses this phone\'s fingerprint / face unlock. The PIN always works too.', hasKey, async (v) => {
+      if (v) { const k = await POST('/api/app-lock/bio', { name: 'Android phone' }); NATIVE_().saveKey(JSON.stringify({ deviceId: k.deviceId, secret: k.secret })); toast('Fingerprint unlock on 👆'); }
+      else { const k = (() => { try { return JSON.parse(NATIVE_().peekId ? NATIVE_().peekId() : '{}'); } catch (e) { return {}; } })(); NATIVE_().clearKey(); if (k.deviceId) await DEL('/api/app-lock/bio/' + k.deviceId).catch(() => {}); toast('Fingerprint unlock off'); }
+    }));
+    else appRows.push(h('div', { class: 'srow' }, h('span', { class: 'sic', html: ICONS.finger }), h('div', { class: 'st' }, h('b', null, 'Fingerprint unlock'), h('small', null, NATIVE_() ? 'No fingerprint / face unlock is set up on this phone (Android 9+ needed).' : 'Available in the Android app. In a browser, App Lock uses your PIN.'))));
+    if (al.fingerprints.length) appRows.push(h('div', { class: 'srow col' }, h('div', { class: 'st' }, h('b', null, 'Fingerprint devices'), h('small', null, 'Phones that can unlock with a fingerprint')),
+      ...al.fingerprints.map(f => h('div', { class: 'fp-dev' }, h('span', null, '👆 ' + f.name + ' · ' + new Date(f.created).toLocaleDateString()), h('button', { class: 'gbtn sm', onclick: async () => { try { await DEL('/api/app-lock/bio/' + f.id); toast('Removed'); again(); } catch (e) { toast(e.message); } } }, 'Remove')))));
+    appRows.push(h('button', { class: 'srow', onclick: async () => {
+      const cur = await pinPad({ title: 'Current App Lock PIN', submit: async (x) => x }); if (!cur) return;
+      const nw = await createPin('app'); if (!nw) return;
+      try { await POST('/api/app-lock', { pin: nw, currentPin: cur }); toast('App Lock PIN changed ✓'); } catch (e) { toast(e.message); }
+    } }, h('span', { class: 'sic', html: ICONS.edit }), h('div', { class: 'st' }, h('b', null, 'Change App Lock PIN'))));
+    appRows.push(h('button', { class: 'srow', onclick: async () => { await POST('/api/app-lock/lock').catch(() => {}); showAppLock(); } }, h('span', { class: 'sic', html: ICONS.lock }), h('div', { class: 'st' }, h('b', null, 'Lock now'), h('small', null, 'Test it: locks the app right away'))));
+  }
+  const info = (ic, title, sub) => h('div', { class: 'srow' }, h('span', { class: 'sic big' }, ic), h('div', { class: 'st' }, h('b', null, title), h('small', null, sub)));
+  return settingsPage('Privacy Center',
+    h('div', { class: 'pc-hero glass' }, h('span', { class: 'pc-ic', html: ICONS.shield }), h('div', null, h('b', null, 'Your privacy, your rules'), h('small', null, 'Lock chats, lock the app, send messages that vanish. Everything here is enforced by the server, not just hidden on screen.'))),
+    section('Chat Lock', ...chatPinRows,
+      info('🔒', 'How to lock or hide a chat', 'In Messages, tap ••• on a chat (or long-press it) → Lock chat / Hide chat. Locked chats sit in a "Locked chats" folder; hidden chats don\'t show at all. Notifications from them say only "New message". 5 wrong PINs = locked out for 5 minutes.')),
+    section('App Lock', ...appRows),
+    section('Secret messages',
+      info('👻', 'Vanish mode', 'Open a chat → ••• → Vanish mode: messages disappear after they are seen, or after 1 hour / 24 hours. Both people see a banner.'),
+      info('👁', 'View-once photos & videos', 'In a chat tap the camera → View once. It opens one time, then the file is deleted from the server.'),
+      toggleRow('Read receipts', 'If off, people won\'t see "Seen" when you read their messages (and you won\'t see theirs)', s.readReceipts, (v) => saveSetting({ readReceipts: v })),
+      toggleRow('Typing indicator', 'Let people see when you are typing', s.typing, (v) => saveSetting({ typing: v }))),
+    section('Online status',
+      toggleRow('Show when you\'re online', '"Active now" under your name in chats. If off, you can\'t see others\' either.', s.activityStatus, (v) => saveSetting({ activityStatus: v })),
+      toggleRow('Show last seen', '"Active 5m ago". If off, you can\'t see others\' last seen either.', s.lastSeen !== false, (v) => saveSetting({ lastSeen: v }))),
+    section('Your profile',
+      toggleRow('Private account', 'Only followers you approve see your posts, reels, stories and lists', s.private, async (v) => { await saveSetting({ private: v }); toast(v ? 'Your account is now private 🔒' : 'Your account is now public'); }),
+      linkRow('user', 'Follow requests', 'Approve or delete', '#/requests', state.followRequests),
+      toggleRow('Hide followers & following', 'Only you can open your followers and following lists. The numbers stay visible.', !!s.hideFollowLists, (v) => saveSetting({ hideFollowLists: v })),
+      linkRow('star', 'Close Friends', 'Who sees your green-ring stories and close-friends posts', '#/settings/people/close-friends')),
+    section('People',
+      linkRow('shield', 'Restricted accounts', 'Their comments and messages are limited quietly', '#/settings/people/restricted'),
+      linkRow('shield', 'Blocked accounts', "They can't find you, see your content or message you", '#/settings/people/blocked'),
+      linkRow('msg', 'Who can message you', 'Everyone, followers or nobody', '#/settings/messages')),
+    section('Screen privacy',
+      toggleRow('Block screenshots (Android app)', NATIVE_() ? 'Stops screenshots and screen recording everywhere in the app. Locked chats, vanish chats and view-once are always protected.' : 'Works in the Android app. On the web screenshots can\'t be blocked or detected.', !!s.screenshotBlock, async (v) => { await saveSetting({ screenshotBlock: v }); wantSecure(false); }),
+      info('🌫', 'Blur in background', 'Chats are blurred whenever the app goes to the background or app switcher, so nobody peeks at them.')),
+    h('p', { class: 'sub fine' }, 'Your PINs are never stored — only a salted hash. Tip: use a PIN that isn\'t your phone lock code.'));
 }, { tab: 'profile' });
 
 addRoute(/^#\/settings\/story$/, async () => {

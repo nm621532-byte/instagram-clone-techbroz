@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Private Insta (InstaGlass) smoke + security test, v1.4 (v1.3 + classic mode, upload editor, drafts, audience, fresh feed). Run before EVERY publish:
+// Private Insta (InstaGlass) smoke + security test, v1.5 (v1.4 + Chat Lock, hidden chats, vanish mode, view-once, App Lock, privacy toggles). Run before EVERY publish:
 //   node test/smoke.mjs http://localhost:3000        (or the live URL)
 // Creates throwaway users (random names), exercises every feature, then tries IDOR / auth attacks that MUST fail.
 const BASE = (process.argv[2] || 'http://localhost:3000').replace(/\/$/, '');
@@ -527,6 +527,152 @@ async function waitFor(fn, ms = 6000) { const t = Date.now(); while (Date.now() 
     const d2 = (await P.post('/api/drafts', { media: JPG, caption: 'x' })).data.draft;
     for (const [cl, n] of [[P, up], [Q, uq], [R, ur], [S, us]]) await cl.req('DELETE', '/api/me', { password: pw });
     ok((await new Client('x').get(d2.media)).status !== 200, 'deleting the account removes its drafts');
+  }
+
+
+  console.log('— v1.5 privacy: Chat Lock, hidden chats, vanish mode, view-once, privacy toggles, App Lock');
+  {
+    const V1 = new Client('v1'), V2 = new Client('v2'), V3 = new Client('v3');
+    const u1 = 'v1_' + rnd, u2 = 'v2_' + rnd, u3 = 'v3_' + rnd;
+    for (const [cl, n] of [[V1, u1], [V2, u2], [V3, u3]]) await cl.post('/api/signup', { username: n, password: pw, name: n });
+    await V1.post('/api/users/' + u2 + '/follow'); await V2.post('/api/users/' + u1 + '/follow');
+    const m1 = (await V1.post('/api/dm/' + u2, { text: 'hello v2' })).data.message;
+    await V2.post('/api/dm/' + u1, { text: 'hi v1' });
+    ok((await V2.get('/api/privacy')).data.chatPinSet === false, 'privacy center: no Chat PIN yet');
+    const np = await V2.post('/api/chat-lock/chats/' + u1);
+    ok(np.status === 409 && np.data.needPin, 'locking a chat needs a Chat PIN first');
+    ok((await V2.post('/api/chat-lock/pin', { pin: '12a4' })).status === 400 && (await V2.post('/api/chat-lock/pin', { pin: '123' })).status === 400 && (await V2.post('/api/chat-lock/pin', { pin: '1234567' })).status === 400, 'Chat PIN must be 4-6 digits');
+    const sp = await V2.post('/api/chat-lock/pin', { pin: '4826' });
+    ok(sp.status === 201 && sp.data.privacy.chatPinSet === true, 'set a 4-digit Chat PIN');
+    ok(!/4826|"hash"|"salt"/.test(JSON.stringify(sp.data) + JSON.stringify((await V2.get('/api/privacy')).data) + JSON.stringify((await V2.get('/api/me')).data)), 'the PIN and its hash never come back from the API');
+    ok((await V2.post('/api/chat-lock/pin', { pin: '1111' })).status === 401, 'changing the Chat PIN needs the current PIN');
+    ok((await V2.post('/api/chat-lock/chats/' + u1)).data.folder === 'locked', 'lock the chat with ' + u1);
+    await V2.post('/api/chat-lock/lock');
+    let ib = (await V2.get('/api/inbox')).data;
+    ok(!ib.conversations.some(c => c.user.username === u1) && ib.locked.count === 1, 'locked chat is gone from the normal inbox API (shows only in the Locked chats count)');
+    const lk = await V2.get('/api/dm/' + u1);
+    ok(lk.status === 423 && lk.data.chatLocked && !JSON.stringify(lk.data).includes('hello v2'), 'opening the locked chat without the PIN = 423, no messages');
+    ok((await V2.get('/api/inbox/locked')).status === 423, 'Locked chats folder needs the PIN');
+    ok((await V2.get('/api/messages/' + m1.id)).status === 423 && (await V2.post('/api/dm/' + u1, { text: 'x' })).status === 423, 'a locked chat message cannot be read or answered without the PIN');
+    ok((await V1.get('/api/inbox')).data.conversations.some(c => c.user.username === u2), 'the other person still sees the chat normally (the lock is only yours)');
+    // outsider: cannot read or lock someone else's chat
+    const o1 = await V3.get('/api/dm/' + u1);
+    ok(o1.status === 200 && !JSON.stringify(o1.data).includes('hello v2'), "an outsider opening /dm/<user> only gets their own (empty) chat, never someone else's");
+    ok((await V3.get('/api/messages/' + m1.id)).status === 404 && (await V3.post('/api/messages/' + m1.id + '/open')).status === 404, "an outsider can't read a message of someone else's chat (404)");
+    await V3.post('/api/chat-lock/pin', { pin: '9090' });
+    ok((await V3.post('/api/chat-lock/chats/' + u1)).status === 200 && (await V1.get('/api/inbox')).data.conversations.some(c => c.user.username === u2) && (await V2.get('/api/inbox')).data.locked.count === 1, "an outsider locking 'their chat with u1' changes nothing for u1 or u2");
+    // notification preview + unread
+    const sv2 = stream(V2); await sv2.ready;
+    await V1.post('/api/dm/' + u2, { text: 'secret text 123' });
+    ok(await waitFor(() => sv2.events.some(e => e.type === 'dm')), 'locked chat: live notification still arrives');
+    const ev = sv2.events.find(e => e.type === 'dm'); sv2.close();
+    ok(ev && ev.private === true && !ev.from && !JSON.stringify(sv2.events).includes('secret text') && !JSON.stringify(sv2.events).includes(u1), 'locked chat notification is "New message" only (no name, no text)');
+    ok((await V2.get('/api/me')).data.unreadDm === 0 && (await V2.get('/api/inbox')).data.locked.unread === true, 'locked chats are left out of the unread badge (folder shows a dot)');
+    // wrong PIN counter + lockout (on the outsider's own PIN, so the test can continue)
+    const w1 = await V3.post('/api/chat-lock/unlock', { pin: '0000' });
+    ok(w1.status === 401 && w1.data.triesLeft === 4, 'wrong Chat PIN rejected (4 tries left)');
+    for (let i = 0; i < 3; i++) await V3.post('/api/chat-lock/unlock', { pin: '0000' });
+    const w5 = await V3.post('/api/chat-lock/unlock', { pin: '0000' });
+    ok(w5.status === 429 && w5.data.lockedOut && w5.data.retryAfter > 0, '5th wrong PIN locks it out for a few minutes (429)');
+    ok((await V3.post('/api/chat-lock/unlock', { pin: '9090' })).status === 429, 'during the lockout even the right PIN is refused');
+    const V3b = new Client('v3b'); await V3b.post('/api/login', { username: u3, password: pw });
+    ok((await V3b.post('/api/chat-lock/unlock', { pin: '9090' })).status === 429, 'the lockout is on the account (a new login is locked out too)');
+    // right PIN opens the folder
+    const un = await V2.post('/api/chat-lock/unlock', { pin: '4826' });
+    ok(un.status === 200 && un.data.until > Date.now(), 'right Chat PIN unlocks for a few minutes');
+    const lf = (await V2.get('/api/inbox/locked')).data;
+    ok(lf.conversations.length === 1 && lf.conversations[0].user.username === u1, 'Locked chats folder lists the chat');
+    const op = await V2.get('/api/dm/' + u1);
+    ok(op.status === 200 && op.data.folder === 'locked' && op.data.messages.some(m => m.text === 'secret text 123'), 'with the PIN the locked chat opens with its messages');
+    // hidden chats
+    ok((await V2.post('/api/hidden-chats/' + u1)).data.folder === 'hidden', 'move the chat to Hidden chats');
+    ib = (await V2.get('/api/inbox')).data;
+    ok(!ib.conversations.some(c => c.user.username === u1) && ib.locked.count === 0, 'hidden chat is not in the inbox and not in the Locked count');
+    ok((await V2.get('/api/inbox/hidden')).data.conversations.some(c => c.user.username === u1), 'Hidden chats folder lists it (PIN open)');
+    await V2.post('/api/chat-lock/lock');
+    ok((await V2.get('/api/inbox/hidden')).status === 423 && (await V2.get('/api/dm/' + u1)).status === 423, 'hidden chat + Hidden chats folder need the PIN');
+    ok((await V2.del('/api/hidden-chats/' + u1)).status === 423, 'unhiding needs the PIN');
+    await V2.post('/api/chat-lock/unlock', { pin: '4826' });
+    ok((await V2.del('/api/hidden-chats/' + u1)).status === 200 && (await V2.get('/api/inbox')).data.conversations.some(c => c.user.username === u1), 'unhide -> back in the normal inbox');
+    ok((await V2.post('/api/chat-lock/pin', { pin: '5555', currentPin: '4826' })).status === 200 && (await V2.post('/api/chat-lock/pin', { pin: '6666', password: pw })).status === 200, 'change the PIN with the current PIN, or with your password if forgotten');
+    await V2.post('/api/chat-lock/chats/' + u1);
+    ok((await V2.req('DELETE', '/api/chat-lock/pin', { pin: '1234' })).status === 401, 'removing the PIN needs the right PIN');
+    const rm = await V2.req('DELETE', '/api/chat-lock/pin', { pin: '6666' });
+    ok(rm.status === 200 && rm.data.released === 1 && (await V2.get('/api/inbox')).data.conversations.some(c => c.user.username === u1), 'removing the PIN puts locked chats back in the inbox');
+    // vanish mode
+    ok((await V1.put('/api/dm/' + u2 + '/vanish', { mode: 'forever' })).status === 400, 'vanish mode: unknown timer rejected');
+    const vm = await V1.put('/api/dm/' + u2 + '/vanish', { mode: 'seen' });
+    ok(vm.status === 200 && vm.data.vanish.mode === 'seen', 'turn on vanish mode (after seen)');
+    const v2view = (await V2.get('/api/dm/' + u1)).data;
+    ok(v2view.vanish && v2view.vanish.mode === 'seen' && v2view.vanish.byMe === false && v2view.messages.some(m => m.kind === 'system' && /vanish mode/.test(m.text)), 'the other person sees the vanish banner + a "turned on vanish mode" line');
+    await V3.put('/api/dm/' + u2 + '/vanish', { mode: '24h' });
+    ok((await V1.get('/api/dm/' + u2)).data.vanish.mode === 'seen', "someone else's vanish switch doesn't touch this chat");
+    const poof = (await V1.post('/api/dm/' + u2, { text: 'poof message' })).data.message;
+    ok(poof.vanish === 'seen', 'messages sent in vanish mode are marked to vanish');
+    await V1.post('/api/dm/' + u2 + '/close');
+    ok((await V1.get('/api/dm/' + u2)).data.messages.some(m => m.id === poof.id), 'unseen vanish message stays until the other person sees it');
+    ok((await V2.get('/api/dm/' + u1)).data.messages.some(m => m.id === poof.id), 'receiver sees the vanish message');
+    const cl = await V2.post('/api/dm/' + u1 + '/close');
+    ok(cl.data.vanished >= 1, 'leaving the chat after seeing it deletes it');
+    ok(!(await V1.get('/api/dm/' + u2)).data.messages.some(m => m.id === poof.id) && (await V1.get('/api/messages/' + poof.id)).status === 404, 'vanished message is gone for both people (404)');
+    await V1.put('/api/dm/' + u2 + '/vanish', { mode: '1h' });
+    const tick = (await V1.post('/api/dm/' + u2, { text: 'tick' })).data.message;
+    const life = tick.expiresAt - tick.created;
+    if (life > 10000) ok(Math.abs(life - 3600000) < 2000, '1 hour vanish timer set on the message (expires in 1 h)');
+    else { await wait(life + 2500); ok((await V1.get('/api/messages/' + tick.id)).status === 404 && !(await V2.get('/api/dm/' + u1)).data.messages.some(m => m.id === tick.id), '1 hour vanish timer: message deleted when the timer runs out (fast test clock)'); }
+    const off = await V1.put('/api/dm/' + u2 + '/vanish', { mode: 'off' });
+    const after = (await V1.post('/api/dm/' + u2, { text: 'normal again' })).data.message;
+    ok(off.data.vanish === null && !after.vanish && !after.expiresAt, 'vanish mode off -> messages stay');
+    // view-once
+    const vo = await V1.post('/api/dm/' + u2, { media: JPG, viewOnce: true });
+    ok(vo.status === 201 && vo.data.message.viewOnce === true && !vo.data.message.media, 'send a view-once photo (no file link in the message)');
+    const voId = vo.data.message.id;
+    const inV2 = (await V2.get('/api/dm/' + u1)).data.messages.find(m => m.id === voId);
+    ok(inV2 && inV2.viewOnce && !inV2.opened && !inV2.media, 'receiver sees an unopened view-once bubble without a link');
+    ok((await V1.post('/api/messages/' + voId + '/open')).status === 403, "the sender can't open their own view-once photo");
+    const opn = await V2.post('/api/messages/' + voId + '/open');
+    ok(opn.status === 200 && /^data:image\/jpeg;base64,/.test(opn.data.data), 'receiver opens it once (photo delivered)');
+    ok((await V2.get(opn.data.file)).status === 404 && (await V1.get(opn.data.file)).status === 404, 'view-once file is deleted from the server after viewing (404)');
+    ok((await V2.post('/api/messages/' + voId + '/open')).status === 410, 'opening it a second time = 410 Gone');
+    ok((await V1.get('/api/messages/' + voId)).data.message.opened === true, 'sender sees "Opened"');
+    const MP4b = 'data:video/mp4;base64,' + SAMPLE_MP4.toString('base64');
+    const vv = await V1.post('/api/dm/' + u2, { media: MP4b, viewOnce: true });
+    ok(vv.status === 201 && vv.data.message.kind === 'video' && vv.data.message.viewOnce, 'send a view-once video');
+    ok((await V1.post('/api/dm/' + u2, { media: MP4b })).status === 415, 'normal (not view-once) DM media stays photos only');
+    const ov = await V2.post('/api/messages/' + vv.data.message.id + '/open');
+    ok(ov.status === 200 && /^data:video\/mp4;base64,/.test(ov.data.data) && (await V2.get(ov.data.file)).status === 404, 'view-once video plays once, then its file is gone');
+    // privacy toggles
+    ok((await V1.put('/api/settings', { hideFollowLists: 'yes' })).status === 400, 'privacy toggles only take true/false');
+    await V1.put('/api/settings', { hideFollowLists: true });
+    ok((await V2.get('/api/users/' + u1 + '/followers')).status === 403 && (await V2.get('/api/users/' + u1 + '/following')).status === 403, 'hidden followers/following lists: others get 403');
+    ok((await V1.get('/api/users/' + u1 + '/followers')).status === 200 && typeof (await V2.get('/api/users/' + u1)).data.user.followers === 'number', 'you still see your own lists; counts stay visible');
+    await V1.put('/api/settings', { lastSeen: false, screenshotBlock: true });
+    ok((await V2.get('/api/dm/' + u1)).data.user.lastActive === null && (await V1.get('/api/settings')).data.settings.screenshotBlock === true, 'last seen hidden; screenshot block setting saved');
+    await V1.put('/api/settings', { hideFollowLists: false, lastSeen: true, screenshotBlock: false });
+    // App Lock
+    ok((await V1.post('/api/app-lock', { pin: '12' })).status === 400 && (await V1.post('/api/app-lock', { pin: '2468', minutes: 7 })).status === 400, 'App Lock: bad PIN / bad auto-lock time rejected');
+    ok((await V1.post('/api/app-lock', { pin: '2468', minutes: 5 })).status === 201, 'turn on App Lock (auto-lock after 5 min)');
+    ok((await V1.get('/api/feed?limit=3')).status === 200, 'the device that turned it on stays open');
+    const V1b = new Client('v1b'); await V1b.post('/api/login', { username: u1, password: pw });
+    const lf1 = await V1b.get('/api/feed?limit=3');
+    ok(lf1.status === 423 && lf1.data.appLocked && (await V1b.get('/api/inbox')).status === 423 && (await V1b.get('/api/dm/' + u2)).status === 423, 'another device/session is locked: feed, inbox and chats answer 423');
+    ok((await V1b.get('/api/me')).data.appLocked === true, '/api/me tells the app to show the lock screen');
+    ok((await V1b.post('/api/app-lock/verify', { pin: '1357' })).status === 401, 'wrong App Lock PIN rejected');
+    ok((await V1b.post('/api/app-lock/verify', { pin: '2468' })).status === 200 && (await V1b.get('/api/feed?limit=3')).status === 200, 'right PIN opens the app');
+    await V1b.post('/api/app-lock/lock');
+    ok((await V1b.get('/api/feed?limit=3')).status === 423, 'auto-lock (app went to background) locks the session again');
+    const bio = await V1.post('/api/app-lock/bio', { name: 'Test phone' });
+    ok(bio.status === 201 && bio.data.secret && bio.data.deviceId, 'fingerprint device key created (server keeps only its hash)');
+    ok((await V1b.post('/api/app-lock/bio-verify', { deviceId: bio.data.deviceId, secret: 'nope' })).status === 401, 'wrong fingerprint key rejected');
+    ok((await V1b.post('/api/app-lock/bio-verify', { deviceId: bio.data.deviceId, secret: bio.data.secret })).status === 200 && (await V1b.get('/api/feed?limit=3')).status === 200, 'fingerprint key unlocks the app');
+    ok((await V2.del('/api/app-lock/bio/' + bio.data.deviceId)).status === 404, "another user can't remove your fingerprint device");
+    ok(!/2468|"hash"|"salt"/.test(JSON.stringify((await V1.get('/api/app-lock')).data) + JSON.stringify((await V1.get('/api/privacy')).data)), 'App Lock PIN / hashes never leak');
+    ok((await V1.req('DELETE', '/api/app-lock', { pin: '0000' })).status === 401, 'turning App Lock off needs the PIN');
+    ok((await V1.req('DELETE', '/api/app-lock', { pin: '2468' })).status === 200, 'turn App Lock off');
+    await V1b.post('/api/app-lock/lock');
+    ok((await V1b.get('/api/feed?limit=3')).status === 200, 'with App Lock off nothing is locked');
+    for (const [cl] of [[V1], [V2], [V3]]) await cl.req('DELETE', '/api/me', { password: pw });
+    ok((await V1b.get('/api/me')).status === 401, 'v1.5 test accounts deleted');
   }
 
   console.log('— cleanup');

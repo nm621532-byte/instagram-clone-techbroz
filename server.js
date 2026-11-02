@@ -10,7 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const VERSION = '1.4.0';
+const VERSION = '1.5.0';
 const APP_NAME = 'Private Insta';
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, 'data'));
@@ -63,6 +63,9 @@ const DEFAULT_SETTINGS = {
   notif: { likes: true, comments: true, follows: true, messages: true, mentions: true },
   theme: 'auto', language: 'en',
   classic: false,                 // v1.4: Classic mode (flat Instagram look instead of liquid glass)
+  lastSeen: true,                 // v1.5: show "Active 5m ago" (reciprocal: off = you can't see theirs either)
+  hideFollowLists: false,         // v1.5: only you can open your followers / following lists (counts stay visible)
+  screenshotBlock: false,         // v1.5: Android app blocks screenshots + screen recording everywhere (vanish / locked chats always)
 };
 const LIST_KEYS = ['blocked', 'restricted', 'closeFriends', 'storyHidden', 'mutedPosts', 'mutedStories'];
 const BOT_LISTS = Object.freeze(Object.fromEntries(LIST_KEYS.map(k => [k, Object.freeze([])])));
@@ -105,6 +108,11 @@ function migrate() {
     try { if (fs.existsSync(DB_FILE)) fs.copyFileSync(DB_FILE, path.join(DATA_DIR, 'db.backup-v1.3.json')); } catch (e) { console.error('backup', e.message); }
     db.schema = 5; changed = true;
   }
+  if (db.schema < 6) { // v1.5: keep a copy of the v1.4 database before Chat Lock / App Lock / vanish fields are added
+    try { if (fs.existsSync(DB_FILE)) fs.copyFileSync(DB_FILE, path.join(DATA_DIR, 'db.backup-v1.4.json')); } catch (e) { console.error('backup', e.message); }
+    db.schema = 6; changed = true;
+  }
+  if (!db.vanish || typeof db.vanish !== 'object') { db.vanish = {}; changed = true; } // v1.5: convKey -> { mode, by, since }
   if (changed) save();
 }
 
@@ -525,7 +533,9 @@ function messageView(m, me) {
   // "Seen" is shown to the sender only if the reader allows read receipts (and the sender is not restricted)
   const reader = db.users[m.to];
   o.seen = m.from === me.id ? !!(m.seen && readReceiptsOn(reader) && !L(reader).restricted.includes(me.id)) : !!m.seen;
-  if (m.kind === 'image') o.media = mediaUrl(m.media);
+  if (m.viewOnce) { o.viewOnce = true; o.opened = !!m.opened; o.expired = m.opened === -1; } // never a file link: opened once via POST /api/messages/:id/open
+  else if (m.kind === 'image' || m.kind === 'video') o.media = mediaUrl(m.media);
+  if (m.vanish) { o.vanish = m.vanish; if (m.expiresAt) o.expiresAt = m.expiresAt; }
   if (m.kind === 'post') {
     const p = db.posts[m.postId]; const owner = p && db.users[p.uid];
     if (!p) o.post = null;
@@ -610,7 +620,8 @@ function push(uid, ev) {
 setInterval(() => { for (const set of streams.values()) for (const res of set) { try { res.write(': ping\n\n'); } catch (e) {} } }, 15000).unref();
 function presence(u, me) { // activity status: shown only if BOTH people have it on, and never to blocked/restricted people
   if (!settingsOf(u).activityStatus || !settingsOf(me).activityStatus || L(u).restricted.includes(me.id) || blockedEither(u.id, me.id)) return { online: false, lastActive: null };
-  return { online: streams.has(u.id), lastActive: u.lastActive || null };
+  const showSeen = settingsOf(u).lastSeen !== false && settingsOf(me).lastSeen !== false; // v1.5: "last seen" has its own switch
+  return { online: streams.has(u.id), lastActive: showSeen ? (u.lastActive || null) : null };
 }
 
 // ---------------------------------------------------------------- auth / sessions
@@ -736,7 +747,7 @@ function makeZip(files) {
 const routes = [];
 function route(method, pattern, auth, fn) {
   const keys = []; const re = new RegExp('^' + pattern.replace(/:(\w+)/g, (_, k) => { keys.push(k); return '([^/]+)'; }) + '$');
-  routes.push({ method, re, keys, auth, fn });
+  routes.push({ method, re, keys, auth, fn, pattern });
 }
 function deleteUserData(me) { // removes a user and everything that points at them
   for (const d of Object.values(db.drafts || {})) if (d.uid === me.id) { dropMedia(d.media); if (d.cover) dropMedia(d.cover); delete db.drafts[d.id]; }
@@ -746,6 +757,9 @@ function deleteUserData(me) { // removes a user and everything that points at th
   for (const st of Object.values(db.stories)) { if (st.uid === me.id) { dropMedia(st.media); delete db.stories[st.id]; } else st.seen = st.seen.filter(u => u !== me.id); }
   for (const m of Object.values(db.messages)) if (m.from === me.id || m.to === me.id) { dropMedia(m.media); delete db.messages[m.id]; }
   for (const k of Object.keys(db.accepted || {})) if (k.split(':').includes(me.id)) delete db.accepted[k];
+  for (const k of Object.keys(db.vanish || {})) if (k.split(':').includes(me.id)) delete db.vanish[k];
+  for (const u of Object.values(db.users)) { if (Array.isArray(u.lockedChats)) u.lockedChats = u.lockedChats.filter(x => x !== me.id); if (Array.isArray(u.hiddenChats)) u.hiddenChats = u.hiddenChats.filter(x => x !== me.id); }
+  for (const [k, s] of Object.entries(db.sessions)) if (s.uid === me.id) appUnlock.delete(k);
   for (const n of Object.values(db.notifs)) if (n.to === me.id || n.from === me.id || (n.pid && !db.posts[n.pid])) delete db.notifs[n.id];
   for (const [k, s] of Object.entries(db.sessions)) if (s.uid === me.id) delete db.sessions[k];
   delete db.follows[me.id]; for (const k of Object.keys(db.follows)) db.follows[k] = db.follows[k].filter(u => u !== me.id);
@@ -793,11 +807,11 @@ route('POST', '/api/logout', false, async (req, res) => {
   send(res, 200, { ok: true });
 });
 route('GET', '/api/me', true, async (req, res, b, me) => {
-  const unreadDm = Object.values(db.messages).filter(m => m.to === me.id && !m.seen && !m.deleted && !m.request && !gone(db.users[m.from])).length;
+  const unreadDm = Object.values(db.messages).filter(m => m.to === me.id && !m.seen && !m.deleted && !m.request && !gone(db.users[m.from]) && !chatFolder(me, m.from)).length; // locked / hidden chats don't count
   const msgRequests = new Set(Object.values(db.messages).filter(m => m.to === me.id && m.request && !m.deleted && !gone(db.users[m.from])).map(m => m.from)).size;
   const unreadNotif = Object.values(db.notifs).filter(n => n.to === me.id && !n.read && !blockedEither(me.id, n.from)).length;
   const followRequests = (db.requests[me.id] || []).filter(i => !gone(db.users[i])).length;
-  send(res, 200, { user: meView(me), unreadDm, unreadNotif, msgRequests, followRequests, version: VERSION });
+  send(res, 200, { user: meView(me), unreadDm, unreadNotif, msgRequests, followRequests, version: VERSION, appLocked: appLocked(req, me), appLock: appLockOn(me) ? { minutes: me.appLock.minutes || 0, fingerprint: (me.appLock.bio || []).length > 0 } : null });
 });
 const ACCENTS = /^#[0-9a-f]{6}$/i;
 route('PUT', '/api/me', true, async (req, res, b, me) => {
@@ -899,7 +913,7 @@ route('GET', '/api/me/export', true, async (req, res, b, me) => {
 
 // ================================================================ settings
 const ENUMS = { storyReplies: ['everyone', 'following', 'off'], dmFrom: ['everyone', 'followers', 'nobody'], commentsFrom: ['everyone', 'followers', 'off'], mentionsFrom: ['everyone', 'followers', 'nobody'], theme: ['auto', 'dark', 'light'], language: ['en', 'hi'] };
-const BOOLS = ['private', 'readReceipts', 'typing', 'activityStatus', 'classic'];
+const BOOLS = ['private', 'readReceipts', 'typing', 'activityStatus', 'classic', 'lastSeen', 'hideFollowLists', 'screenshotBlock'];
 route('GET', '/api/settings', true, async (req, res, b, me) => send(res, 200, { settings: settingsOf(me) }));
 route('PUT', '/api/settings', true, async (req, res, b, me) => {
   const s = settingsOf(me); const next = JSON.parse(JSON.stringify(s));
@@ -990,6 +1004,7 @@ function pageArgs(q, total) { // ?offset=&limit= with sane bounds; no args = fir
 route('GET', '/api/users/:username/:list', true, async (req, res, b, me, p, q) => {
   const u = visibleUser(p.username, me);
   if (!canView(me, u)) throw httpErr(403, 'This account is private');
+  if (u.id !== me.id && settingsOf(u).hideFollowLists) throw httpErr(403, u.username + ' keeps their followers and following lists private');
   let ids;
   if (p.list === 'followers') ids = followers(u.id).reverse(); else if (p.list === 'following') ids = following(u.id).slice().reverse(); else throw httpErr(404, 'Not found');
   // newest first, real people before bots; paginated (?offset=&limit=) so a boosted account with thousands of followers stays fast
@@ -1347,6 +1362,53 @@ route('DELETE', '/api/stories/:id', true, async (req, res, b, me, p) => {
   dropMedia(s.media); delete db.stories[s.id]; save(); send(res, 200, { ok: true });
 });
 
+
+// ================================================================ v1.5 privacy: Chat PIN, Chat Lock, hidden chats, App Lock
+// PINs are never stored: scrypt(pin, per-user salt). Wrong tries are counted on the ACCOUNT (not the session or device),
+// 5 wrong in a row -> locked out for PIN_LOCKOUT_MS. A correct Chat PIN opens locked + hidden chats on that one session for a few minutes.
+const PIN_RE = /^\d{4,6}$/;
+const PIN_MAX_FAILS = 5;
+const PIN_LOCKOUT_MS = Math.max(1000, parseInt(process.env.PIN_LOCKOUT_MS || String(5 * 60 * 1000), 10));
+const CHAT_UNLOCK_MS = 10 * 60 * 1000;
+const AUTOLOCK_MIN = [0, 1, 5, 15, 30, 60];     // App Lock: minutes in the background before the app locks again
+function pinHash(pin, salt) { return crypto.scryptSync('pin:' + pin, salt, 32).toString('hex'); }
+function sameHex(a, b) { try { const x = Buffer.from(String(a), 'hex'), y = Buffer.from(String(b), 'hex'); return x.length === y.length && x.length > 0 && crypto.timingSafeEqual(x, y); } catch (e) { return false; } }
+function newPin(pin) { if (!PIN_RE.test(String(pin == null ? '' : pin))) throw httpErr(400, 'PIN must be 4 to 6 digits'); const salt = id(16); return { salt, hash: pinHash(String(pin), salt), set: now() }; }
+function guardOf(me, kind) { me.pinGuard = me.pinGuard || {}; return me.pinGuard[kind] = me.pinGuard[kind] || { fails: 0, until: 0 }; }
+function lockoutErr(st) { const sec = Math.ceil((st.until - now()) / 1000); const e = httpErr(429, 'Too many wrong tries. Try again in ' + (sec > 90 ? Math.ceil(sec / 60) + ' minutes' : sec + ' seconds')); e.extra = { retryAfter: sec, lockedOut: true }; return e; }
+// checks a secret against a stored hash with the account-wide wrong-try counter; throws 401 (tries left) or 429 (locked out)
+function checkSecret(me, kind, ok) {
+  const st = guardOf(me, kind);
+  if (st.until > now()) throw lockoutErr(st);
+  if (ok()) { if (st.fails || st.until) { st.fails = 0; st.until = 0; save(); } return true; }
+  st.fails++;
+  if (st.fails >= PIN_MAX_FAILS) { st.fails = 0; st.until = now() + PIN_LOCKOUT_MS; save(); throw lockoutErr(st); }
+  save(); const e = httpErr(401, 'Wrong PIN — ' + (PIN_MAX_FAILS - st.fails) + (PIN_MAX_FAILS - st.fails === 1 ? ' try' : ' tries') + ' left'); e.extra = { triesLeft: PIN_MAX_FAILS - st.fails }; throw e;
+}
+function checkPin(me, kind, pin) {
+  const rec = kind === 'chat' ? me.chatPin : me.appLock;
+  if (!rec || !rec.hash) throw httpErr(400, kind === 'chat' ? 'Set a Chat PIN first' : 'App Lock is off');
+  return checkSecret(me, kind, () => PIN_RE.test(String(pin == null ? '' : pin)) && sameHex(pinHash(String(pin), rec.salt), rec.hash));
+}
+function privLists(me) { if (!Array.isArray(me.lockedChats)) me.lockedChats = []; if (!Array.isArray(me.hiddenChats)) me.hiddenChats = []; return me; }
+function chatFolder(me, otherId) { if (!me || me.isBot) return null; privLists(me); return me.lockedChats.includes(otherId) ? 'locked' : me.hiddenChats.includes(otherId) ? 'hidden' : null; }
+function sessOf(req) { return req && req.sessKey ? db.sessions[req.sessKey] : null; }
+function chatUnlocked(req) { const s = sessOf(req); return !!(s && s.chatUntil && s.chatUntil > now()); }
+function lockedErr(folder) { const e = httpErr(423, folder === 'hidden' ? 'This chat is hidden. Enter your Chat PIN.' : 'This chat is locked. Enter your Chat PIN.'); e.extra = { chatLocked: true, folder }; return e; }
+function requireChatOpen(req, me, otherId) { const f = chatFolder(me, otherId); if (f && !chatUnlocked(req)) throw lockedErr(f); return f; }
+// App Lock state per session lives in memory: a server restart locks every App-Lock session again (safe default)
+const appUnlock = new Map(); // sessKey -> { at, last }
+function appLockOn(u) { return !!(u && !u.isBot && u.appLock && u.appLock.hash); }
+function appLockIdleMs(u) { return (u.appLock.minutes || 0) * 60000 + 90000; } // the open app sends a heartbeat every 60 s
+function appLocked(req, u) {
+  if (!appLockOn(u)) return false;
+  const st = appUnlock.get(req.sessKey);
+  if (!st) return true;
+  if (now() - st.last > appLockIdleMs(u)) { appUnlock.delete(req.sessKey); return true; }
+  return false;
+}
+const APP_LOCK_OPEN = new Set(['GET /api/me', 'POST /api/logout', 'POST /api/login', 'POST /api/signup', 'GET /api/app-lock', 'POST /api/app-lock/verify', 'POST /api/app-lock/bio-verify']);
+
 // ================================================================ direct messages
 // A conversation is always "me + the other user", so nobody can address someone else's chat.
 function pendingRequest(from, to) { return Object.values(db.messages).some(m => m.from === from && m.to === to && m.request && !m.deleted); }
@@ -1369,18 +1431,49 @@ function deliver(me, u, fields, isStoryReply) {
   const key = convKey(me.id, u.id);
   if (lane === 'inbox') db.accepted[key] = true;
   const m = Object.assign({ id: id(), conv: key, from: me.id, to: u.id, created: now(), seen: 0, request: lane === 'request' }, fields);
+  const v = db.vanish && db.vanish[key];
+  if (v && m.kind !== 'system') { m.vanish = v.mode; if (VANISH_MODES[v.mode]) m.expiresAt = m.created + Math.round(VANISH_MODES[v.mode] * VANISH_SCALE); }
   db.messages[m.id] = m; save();
-  push(u.id, { type: 'dm', from: me.username, request: m.request, quiet: !settingsOf(u).notif.messages, message: messageView(m, u) });
+  pushDm(u, me, m);
   push(me.id, { type: 'dm_echo', to: u.username, message: messageView(m, me) });
   return m;
 }
+// v1.5: a message into a chat the reader locked or hid is announced as "New message" only — no name, no text, no photo
+function chatRef(key, uid) { return sha('ref:' + key + ':' + uid).slice(0, 16); }
+function pushDm(u, from, m) {
+  const quiet = !settingsOf(u).notif.messages;
+  if (chatFolder(u, from.id)) push(u.id, { type: 'dm', private: true, quiet, chat: chatRef(m.conv, u.id) });
+  else push(u.id, { type: 'dm', from: from.username, request: m.request, quiet, message: messageView(m, u) });
+}
+// v1.5 vanish mode: messages disappear after they are seen (when the reader leaves the chat) or after 1 h / 24 h
+const VANISH_MODES = { seen: 0, '1h': 3600 * 1000, '24h': 24 * 3600 * 1000 };
+const VANISH_SCALE = Math.max(0.00001, Math.min(1, parseFloat(process.env.VANISH_SCALE || '1') || 1)); // test hook only (local smoke runs timers fast)
+const VANISH_SEEN_KEEP = Math.round(30 * 60 * 1000 * VANISH_SCALE); // seen "after seen" messages left behind if the chat was never closed
+const VIEW_ONCE_TTL = 14 * 24 * 3600 * 1000;                       // unopened view-once photos/videos expire after 14 days
+function vanishMsg(m) { // hard delete: the text and any photo are gone from the server
+  dropMedia(m.media); delete db.messages[m.id];
+  for (const uid of [m.from, m.to]) push(uid, { type: 'vanished', ids: [m.id] });
+}
+function sweepVanish() {
+  const t = now(); let n = 0;
+  for (const m of Object.values(db.messages)) {
+    if (m.expiresAt && m.expiresAt <= t) { vanishMsg(m); n++; }
+    else if (m.vanish === 'seen' && m.seen && t - m.seen > VANISH_SEEN_KEEP) { vanishMsg(m); n++; }
+    else if (m.viewOnce && !m.opened && m.media && t - m.created > VIEW_ONCE_TTL) { dropMedia(m.media); m.media = null; m.opened = -1; n++; }
+  }
+  if (n) save();
+  return n;
+}
+setInterval(sweepVanish, VANISH_SCALE < 1 ? 1000 : 20000).unref();
 const activeMsgs = (me) => Object.values(db.messages).filter(m => !m.deleted && (m.from === me.id || m.to === me.id) && !gone(db.users[m.from === me.id ? m.to : m.from]));
-function convList(me, requests) {
-  const convs = new Map();
+function convList(me, requests, folder) { // folder: undefined = main inbox (no locked / hidden chats), 'locked', 'hidden'
+  const convs = new Map(); const t = now();
   for (const m of activeMsgs(me)) {
     const isReqForMe = m.request && m.to === me.id;
     if (!!requests !== isReqForMe) continue;
+    if (m.expiresAt && m.expiresAt <= t) continue;
     const other = m.from === me.id ? m.to : m.from;
+    if ((chatFolder(me, other) || undefined) !== folder) continue;
     const c = convs.get(other) || { last: null, unread: 0 };
     if (!c.last || m.created > c.last.created) c.last = m;
     if (m.to === me.id && !m.seen) c.unread++;
@@ -1391,8 +1484,13 @@ function convList(me, requests) {
 }
 route('GET', '/api/inbox', true, async (req, res, b, me) => {
   const reqCount = convList(me, true).length;
-  send(res, 200, { conversations: convList(me, false), requests: reqCount });
+  privLists(me);
+  const lockedIds = me.lockedChats.filter(i => db.users[i] && !gone(db.users[i]));
+  const lockedUnread = Object.values(db.messages).some(m => m.to === me.id && !m.seen && !m.deleted && !m.request && lockedIds.includes(m.from));
+  send(res, 200, { conversations: convList(me, false), requests: reqCount, locked: { count: lockedIds.length, unread: lockedUnread }, chatPinSet: !!(me.chatPin && me.chatPin.hash) });
 });
+route('GET', '/api/inbox/locked', true, async (req, res, b, me) => { if (!chatUnlocked(req)) throw lockedErr('locked'); send(res, 200, { conversations: convList(me, false, 'locked'), until: sessOf(req).chatUntil }); });
+route('GET', '/api/inbox/hidden', true, async (req, res, b, me) => { if (!chatUnlocked(req)) throw lockedErr('hidden'); send(res, 200, { conversations: convList(me, false, 'hidden'), until: sessOf(req).chatUntil }); });
 route('GET', '/api/inbox/requests', true, async (req, res, b, me) => send(res, 200, { conversations: convList(me, true) }));
 function otherUser(name, me) { const u = visibleUser(name, me); if (u.id === me.id) throw httpErr(400, "You can't message yourself"); return u; }
 function markSeen(me, u) {
@@ -1402,22 +1500,32 @@ function markSeen(me, u) {
 }
 route('GET', '/api/dm/:username', true, async (req, res, b, me, p) => {
   const u = otherUser(p.username, me); const key = convKey(me.id, u.id);
-  const msgs = Object.values(db.messages).filter(m => m.conv === key && !m.deleted).sort((a, c) => a.created - c.created);
+  const folder = requireChatOpen(req, me, u.id);
+  const t = now();
+  const msgs = Object.values(db.messages).filter(m => m.conv === key && !m.deleted && !(m.expiresAt && m.expiresAt <= t)).sort((a, c) => a.created - c.created);
   const isRequest = msgs.some(m => m.request && m.to === me.id);
   if (!isRequest) markSeen(me, u); // opening a message request does not tell the sender you saw it
   let canMessage = true, why = null;
   if (blockedEither(me.id, u.id)) { canMessage = false; why = L(me).blocked.includes(u.id) ? 'You blocked this account' : "You can't message this account"; }
   else if (!isRequest) { try { const s = settingsOf(u); if (!db.accepted[key] && !isFollowing(u.id, me.id) && s.dmFrom === 'nobody' && !pendingRequest(u.id, me.id)) { canMessage = false; why = u.username + " isn't accepting messages"; } } catch (e) {} }
-  send(res, 200, { user: Object.assign(publicUser(u, me), presence(u, me)), messages: msgs.slice(-200).map(m => messageView(m, me)), isRequest, canMessage, why });
+  const v = (db.vanish || {})[key] || null;
+  send(res, 200, { user: Object.assign(publicUser(u, me), presence(u, me)), messages: msgs.slice(-200).map(m => messageView(m, me)), isRequest, canMessage, why,
+    folder, chatRef: chatRef(key, me.id), vanish: v ? { mode: v.mode, byMe: v.by === me.id, since: v.since } : null });
 });
 route('POST', '/api/dm/:username', true, async (req, res, b, me, p) => {
   const u = otherUser(p.username, me);
+  requireChatOpen(req, me, u.id);
   const fields = {};
   if (b.postId) { const post = viewPost(String(b.postId), me); fields.kind = 'post'; fields.postId = post.id; fields.text = clean(b.text, 1000); }
-  else if (b.media) { fields.kind = 'image'; fields.text = clean(b.text, 1000); }
+  else if (b.media) { fields.kind = 'image'; fields.text = clean(b.text, 1000); if (b.viewOnce === true) fields.viewOnce = true; }
   else { fields.kind = 'text'; fields.text = clean(b.text, 2000); if (!fields.text) throw httpErr(400, 'Message is empty'); }
   dmLane(me, u); // permission check before storing any photo
-  if (b.media && !b.postId) fields.media = storeMedia(b.media, me.id, ['image'], convKey(me.id, u.id)).file;
+  if (b.media && !b.postId) {
+    // view-once may be a photo or a video; normal DM media stays photos only
+    const st = storeMedia(b.media, me.id, fields.viewOnce ? ['image', 'video'] : ['image'], convKey(me.id, u.id));
+    fields.media = st.file; fields.kind = st.kind;
+    if (fields.viewOnce) db.media[st.file].viewOnce = true; // never served by /media/ — only POST /api/messages/:id/open, once
+  }
   const m = deliver(me, u, fields);
   send(res, 201, { message: messageView(m, me), request: m.request });
 });
@@ -1433,6 +1541,7 @@ route('DELETE', '/api/dm/:username/request', true, async (req, res, b, me, p) =>
 });
 route('POST', '/api/dm/:username/typing', true, async (req, res, b, me, p) => {
   const u = otherUser(p.username, me);
+  requireChatOpen(req, me, u.id);
   if (blockedEither(me.id, u.id)) throw httpErr(403, "You can't message this account");
   const key = convKey(me.id, u.id);
   // typing indicator: only if I allow it, and only inside an accepted chat
@@ -1440,11 +1549,52 @@ route('POST', '/api/dm/:username/typing', true, async (req, res, b, me, p) => {
   send(res, 200, { ok: true });
 });
 route('POST', '/api/dm/:username/seen', true, async (req, res, b, me, p) => {
-  const u = otherUser(p.username, me); markSeen(me, u); send(res, 200, { ok: true });
+  const u = otherUser(p.username, me); requireChatOpen(req, me, u.id); markSeen(me, u); send(res, 200, { ok: true });
+});
+// v1.5 vanish mode: either person can switch it for the chat; a line in the chat tells both
+const VANISH_LABEL = { seen: 'messages disappear after they are seen', '1h': 'messages disappear after 1 hour', '24h': 'messages disappear after 24 hours' };
+route('PUT', '/api/dm/:username/vanish', true, async (req, res, b, me, p) => {
+  const u = otherUser(p.username, me); requireChatOpen(req, me, u.id);
+  if (blockedEither(me.id, u.id)) throw httpErr(403, "You can't message this account");
+  const mode = String(b.mode || '');
+  if (mode !== 'off' && !(mode in VANISH_MODES)) throw httpErr(400, 'mode must be off, seen, 1h or 24h');
+  const key = convKey(me.id, u.id); db.vanish = db.vanish || {};
+  const before = db.vanish[key] ? db.vanish[key].mode : 'off';
+  if (before === mode) return send(res, 200, { vanish: db.vanish[key] ? { mode, byMe: db.vanish[key].by === me.id } : null });
+  if (mode === 'off') delete db.vanish[key]; else db.vanish[key] = { mode, by: me.id, since: now() };
+  const text = mode === 'off' ? me.username + ' turned off vanish mode' : me.username + ' turned on vanish mode — ' + VANISH_LABEL[mode];
+  const m = { id: id(), conv: key, from: me.id, to: u.id, created: now(), seen: 0, request: false, kind: 'system', text };
+  db.messages[m.id] = m; save();
+  for (const [x, y] of [[u, me], [me, u]]) push(x.id, { type: 'vanish', from: y.username, with: y.username, mode, chat: chatRef(key, x.id) });
+  send(res, 200, { vanish: mode === 'off' ? null : { mode, byMe: true }, message: messageView(m, me) });
+});
+// leaving a vanish chat: what you have seen (sent to you) disappears now
+route('POST', '/api/dm/:username/close', true, async (req, res, b, me, p) => {
+  const u = otherUser(p.username, me); const key = convKey(me.id, u.id); let n = 0;
+  for (const m of Object.values(db.messages)) if (m.conv === key && m.to === me.id && m.vanish === 'seen' && m.seen && !m.deleted) { vanishMsg(m); n++; }
+  if (n) save();
+  send(res, 200, { ok: true, vanished: n });
+});
+// v1.5 view-once: only the receiver, only once. The file is read, handed over in this answer and deleted from the server.
+route('POST', '/api/messages/:id/open', true, async (req, res, b, me, p) => {
+  const m = db.messages[p.id];
+  if (!m || m.deleted || (m.from !== me.id && m.to !== me.id)) throw httpErr(404, 'Message not found');
+  if (!m.viewOnce) throw httpErr(400, 'Not a view-once message');
+  requireChatOpen(req, me, m.from === me.id ? m.to : m.from);
+  if (m.to !== me.id) throw httpErr(403, 'Only the receiver can open a view-once ' + (m.kind === 'video' ? 'video' : 'photo'));
+  if (m.opened || !m.media) throw httpErr(410, 'Already opened — view-once media can only be seen once');
+  const file = m.media; let buf;
+  try { buf = fs.readFileSync(path.join(MEDIA_DIR, file)); } catch (e) { m.opened = -1; m.media = null; save(); throw httpErr(410, 'This media is no longer available'); }
+  const mime = MIME[file.split('.').pop()] || 'application/octet-stream';
+  m.opened = now(); m.media = null; if (!m.seen) m.seen = now();
+  dropMedia(file); save();
+  push(m.from, { type: 'opened', id: m.id, by: me.username });
+  send(res, 200, { kind: m.kind, data: 'data:' + mime + ';base64,' + buf.toString('base64'), file: '/media/' + file, opened: m.opened });
 });
 route('GET', '/api/messages/:id', true, async (req, res, b, me, p) => {
   const m = db.messages[p.id];
-  if (!m || m.deleted || (m.from !== me.id && m.to !== me.id)) throw httpErr(404, 'Message not found'); // same answer as "doesn't exist": no IDOR leak
+  if (!m || m.deleted || (m.from !== me.id && m.to !== me.id) || (m.expiresAt && m.expiresAt <= now())) throw httpErr(404, 'Message not found'); // same answer as "doesn't exist": no IDOR leak
+  requireChatOpen(req, me, m.from === me.id ? m.to : m.from);
   send(res, 200, { message: messageView(m, me) });
 });
 route('DELETE', '/api/messages/:id', true, async (req, res, b, me, p) => {
@@ -1453,6 +1603,125 @@ route('DELETE', '/api/messages/:id', true, async (req, res, b, me, p) => {
   if (m.from !== me.id) throw httpErr(403, 'You can only unsend your own messages');
   m.deleted = true; m.text = ''; if (m.media) { dropMedia(m.media); m.media = null; } save();
   push(m.to, { type: 'unsend', id: m.id, from: me.username }); send(res, 200, { ok: true });
+});
+
+
+// ================================================================ v1.5 privacy routes (Chat PIN, Chat Lock, hidden chats, App Lock, Privacy Center)
+function privacyView(req, me) {
+  privLists(me); const s = sessOf(req); const al = me.appLock;
+  const g = (k) => { const st = guardOf(me, k); return st.until > now() ? { lockedOut: true, retryAfter: Math.ceil((st.until - now()) / 1000) } : { lockedOut: false, triesLeft: PIN_MAX_FAILS - st.fails }; };
+  const ok = (i) => db.users[i] && !gone(db.users[i]);
+  return {
+    chatPinSet: !!(me.chatPin && me.chatPin.hash), chatUnlocked: chatUnlocked(req), chatUntil: chatUnlocked(req) ? s.chatUntil : null,
+    lockedChats: me.lockedChats.filter(ok).length, hiddenChats: me.hiddenChats.filter(ok).length, chatPin: g('chat'),
+    appLock: appLockOn(me) ? { on: true, minutes: al.minutes || 0, fingerprints: (al.bio || []).map(d => ({ id: d.id, name: d.name, created: d.created })), pin: g('app') } : { on: false, minutes: 0, fingerprints: [] },
+    settings: settingsOf(me),
+  };
+}
+route('GET', '/api/privacy', true, async (req, res, b, me) => send(res, 200, privacyView(req, me)));
+// set or change the Chat PIN. Changing needs the current PIN (or your account password if you forgot it).
+route('POST', '/api/chat-lock/pin', true, async (req, res, b, me) => {
+  const had = !!(me.chatPin && me.chatPin.hash);
+  if (had) {
+    if (b.password !== undefined && b.currentPin === undefined) { if (tooMany('pinpw:' + me.id, 10) || !checkPassword(me, String(b.password || ''))) throw httpErr(401, 'Password is wrong'); }
+    else checkPin(me, 'chat', b.currentPin);
+  }
+  me.chatPin = newPin(b.pin); const g = guardOf(me, 'chat'); g.fails = 0; g.until = 0;
+  save(); send(res, had ? 200 : 201, { ok: true, changed: had, privacy: privacyView(req, me) });
+});
+// remove the Chat PIN: every locked / hidden chat goes back to the normal inbox
+route('DELETE', '/api/chat-lock/pin', true, async (req, res, b, me) => {
+  checkPin(me, 'chat', b.pin);
+  privLists(me); const n = me.lockedChats.length + me.hiddenChats.length;
+  me.chatPin = null; me.lockedChats = []; me.hiddenChats = [];
+  const s = sessOf(req); if (s) delete s.chatUntil;
+  save(); send(res, 200, { ok: true, released: n });
+});
+route('POST', '/api/chat-lock/unlock', true, async (req, res, b, me) => {
+  if (tooMany('pinip:' + clientIp(req), 60)) throw httpErr(429, 'Too many tries from this network, wait 10 minutes');
+  checkPin(me, 'chat', b.pin);
+  const s = sessOf(req); s.chatUntil = now() + CHAT_UNLOCK_MS; save();
+  send(res, 200, { ok: true, until: s.chatUntil });
+});
+route('POST', '/api/chat-lock/lock', true, async (req, res, b, me) => { const s = sessOf(req); if (s && s.chatUntil) { delete s.chatUntil; save(); } send(res, 200, { ok: true }); });
+function folderToggle(folder, add) { // lock / hide one of MY chats. The chat is always "me + that user", so nobody can touch someone else's chat.
+  return async (req, res, b, me, p) => {
+    const u = userByName(p.username);
+    if (!u || u.id === me.id || u.isBot) throw httpErr(404, 'User not found');
+    privLists(me);
+    const key = folder === 'locked' ? 'lockedChats' : 'hiddenChats', other = folder === 'locked' ? 'hiddenChats' : 'lockedChats';
+    if (add) {
+      if (!(me.chatPin && me.chatPin.hash)) { const e = httpErr(409, 'Set a Chat PIN first'); e.extra = { needPin: true }; throw e; }
+      const cur = chatFolder(me, u.id); if (cur && cur !== folder && !chatUnlocked(req)) throw lockedErr(cur); // moving between folders needs the PIN
+      me[other] = me[other].filter(x => x !== u.id);
+      if (!me[key].includes(u.id)) me[key].push(u.id);
+    } else {
+      if (!me[key].includes(u.id)) throw httpErr(404, folder === 'locked' ? 'This chat is not locked' : 'This chat is not hidden');
+      if (!chatUnlocked(req)) throw lockedErr(folder);                                                                    // taking it out needs the PIN
+      me[key] = me[key].filter(x => x !== u.id);
+    }
+    save(); send(res, 200, { ok: true, folder: chatFolder(me, u.id) });
+  };
+}
+route('POST', '/api/chat-lock/chats/:username', true, folderToggle('locked', true));
+route('DELETE', '/api/chat-lock/chats/:username', true, folderToggle('locked', false));
+route('POST', '/api/hidden-chats/:username', true, folderToggle('hidden', true));
+route('DELETE', '/api/hidden-chats/:username', true, folderToggle('hidden', false));
+
+// App Lock: one PIN for the account, asked on every device / session; auto-locks after X minutes in the background
+route('GET', '/api/app-lock', true, async (req, res, b, me) => send(res, 200, { on: appLockOn(me), locked: appLocked(req, me), minutes: appLockOn(me) ? me.appLock.minutes || 0 : 0, fingerprint: appLockOn(me) && (me.appLock.bio || []).length > 0, pin: privacyView(req, me).appLock.pin || null }));
+route('POST', '/api/app-lock', true, async (req, res, b, me) => { // turn on, or change the PIN
+  const had = appLockOn(me);
+  if (had) {
+    if (b.password !== undefined && b.currentPin === undefined) { if (tooMany('pinpw:' + me.id, 10) || !checkPassword(me, String(b.password || ''))) throw httpErr(401, 'Password is wrong'); }
+    else checkPin(me, 'app', b.currentPin);
+  }
+  const minutes = b.minutes === undefined ? (had ? me.appLock.minutes || 0 : 1) : Number(b.minutes);
+  if (!AUTOLOCK_MIN.includes(minutes)) throw httpErr(400, 'minutes must be one of ' + AUTOLOCK_MIN.join(', '));
+  const rec = newPin(b.pin); me.appLock = Object.assign(rec, { minutes, bio: had ? (me.appLock.bio || []) : [] });
+  const g = guardOf(me, 'app'); g.fails = 0; g.until = 0;
+  appUnlock.set(req.sessKey, { at: now(), last: now() });   // this device stays open; every other session must enter the PIN
+  save(); send(res, had ? 200 : 201, { ok: true, on: true, minutes });
+});
+route('PUT', '/api/app-lock', true, async (req, res, b, me) => {
+  if (!appLockOn(me)) throw httpErr(400, 'App Lock is off');
+  const minutes = Number(b.minutes); if (!AUTOLOCK_MIN.includes(minutes)) throw httpErr(400, 'minutes must be one of ' + AUTOLOCK_MIN.join(', '));
+  me.appLock.minutes = minutes; save(); send(res, 200, { ok: true, minutes });
+});
+route('DELETE', '/api/app-lock', true, async (req, res, b, me) => {
+  if (!appLockOn(me)) throw httpErr(400, 'App Lock is off');
+  checkPin(me, 'app', b.pin);
+  me.appLock = null; for (const [k, s] of Object.entries(db.sessions)) if (s.uid === me.id) appUnlock.delete(k);
+  save(); send(res, 200, { ok: true, on: false });
+});
+route('POST', '/api/app-lock/verify', true, async (req, res, b, me) => {
+  if (!appLockOn(me)) return send(res, 200, { ok: true, on: false });
+  if (tooMany('pinip:' + clientIp(req), 60)) throw httpErr(429, 'Too many tries from this network, wait 10 minutes');
+  checkPin(me, 'app', b.pin);
+  appUnlock.set(req.sessKey, { at: now(), last: now() }); send(res, 200, { ok: true });
+});
+route('POST', '/api/app-lock/lock', true, async (req, res, b, me) => { appUnlock.delete(req.sessKey); send(res, 200, { ok: true, locked: appLockOn(me) }); });
+route('POST', '/api/app-lock/alive', true, async (req, res) => send(res, 200, { ok: true })); // heartbeat while the app is open (keeps the idle timer fresh)
+// fingerprint (Android app): the phone keeps a random device key behind its fingerprint prompt; the server only stores its hash
+route('POST', '/api/app-lock/bio', true, async (req, res, b, me) => {
+  if (!appLockOn(me)) throw httpErr(400, 'Turn on App Lock first');
+  const list = me.appLock.bio = (me.appLock.bio || []).slice(-4);
+  const secret = id(32), dev = { id: id(8), hash: sha('bio:' + secret), name: clean(b.name, 40) || deviceOf(req.headers['user-agent']), created: now() };
+  list.push(dev); save();
+  send(res, 201, { deviceId: dev.id, secret });
+});
+route('DELETE', '/api/app-lock/bio/:id', true, async (req, res, b, me, p) => {
+  if (!appLockOn(me)) throw httpErr(404, 'Not found');
+  const before = (me.appLock.bio || []).length; me.appLock.bio = (me.appLock.bio || []).filter(d => d.id !== p.id);
+  if (me.appLock.bio.length === before) throw httpErr(404, 'Not found');
+  save(); send(res, 200, { ok: true });
+});
+route('POST', '/api/app-lock/bio-verify', true, async (req, res, b, me) => {
+  if (!appLockOn(me)) return send(res, 200, { ok: true, on: false });
+  if (tooMany('pinip:' + clientIp(req), 60)) throw httpErr(429, 'Too many tries from this network, wait 10 minutes');
+  const dev = (me.appLock.bio || []).find(d => d.id === String(b.deviceId || ''));
+  checkSecret(me, 'app', () => !!dev && sameHex(sha('bio:' + String(b.secret || '')), dev.hash));
+  appUnlock.set(req.sessKey, { at: now(), last: now() }); send(res, 200, { ok: true });
 });
 
 // ================================================================ notifications
@@ -1668,6 +1937,13 @@ const server = http.createServer(async (req, res) => {
       if (req.method !== 'GET' && req.headers['x-ig'] !== '1') throw httpErr(403, 'Missing X-IG header');
       const me = sessionUser(req);
       if (r.auth && !me) throw httpErr(401, 'Please log in');
+      if (me && appLockOn(me)) { // v1.5 App Lock: a locked session can only see who it is and unlock
+        const sig = req.method + ' ' + r.pattern;
+        if (!APP_LOCK_OPEN.has(sig) && !r.pattern.startsWith('/api/admin/reels')) { // the reels uploader script keeps working
+          if (appLocked(req, me)) { const e = httpErr(423, 'Private Insta is locked. Enter your App Lock PIN.'); e.extra = { appLocked: true }; throw e; }
+          appUnlock.get(req.sessKey).last = now();
+        }
+      }
       const m = r.re.exec(pathname); const params = {}; r.keys.forEach((k, i) => params[k] = m[i + 1]);
       const body = (req.method === 'GET' || r.raw) ? {} : await readBody(req);
       await r.fn(req, res, body, me, params, url.searchParams);
@@ -1686,6 +1962,7 @@ const server = http.createServer(async (req, res) => {
       const me = sessionUser(req);
       if (!me) return deny(401, 'Please log in');
       const meta = db.media[file];
+      if (meta.viewOnce) return deny(404, 'Not found');                                                 // v1.5: view-once files are never served as links
       if (meta.conv) { if (!meta.conv.split(':').includes(me.id)) return deny(404, 'Not found'); } // DM photos: only the two people in that chat
       else if (!mediaAllowed(file, meta, me, req)) return deny(403, 'This account is private');      // private accounts / close friends / blocks
       res.setHeader('Vary', 'Cookie');
@@ -1707,7 +1984,7 @@ const server = http.createServer(async (req, res) => {
   } catch (e) {
     const code = e.code && Number.isInteger(e.code) ? e.code : 500;
     if (code === 500) console.error(e);
-    if (!res.headersSent) send(res, code, { error: code === 500 ? 'Server error' : e.message });
+    if (!res.headersSent) send(res, code, Object.assign({ error: code === 500 ? 'Server error' : e.message }, code === 500 ? {} : (e.extra || {})));
   }
 });
 

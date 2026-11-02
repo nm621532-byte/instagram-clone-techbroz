@@ -1,16 +1,28 @@
-# Private Insta 🔒📸 — Instagram-style clone in Liquid Glass UI (v1.4)
+# Private Insta 🔒📸 — Instagram-style clone in Liquid Glass UI (v1.5)
 
 **Live:** https://instaglass-live.sites.tab.bot  ·  test login: `demo` / `demo1234` (or sign up — it takes 5 seconds)
-**Download v1.4:** [Android APK](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.4/InstaGlass-v1.4.apk) · [Web app ZIP](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.4/instaglass-web-v1.4.zip) · [All releases](https://github.com/nm621532-byte/instagram-clone-techbroz/releases)
+**Download v1.5:** [Android APK](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.5/InstaGlass-v1.5.apk) · [Web app ZIP](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.5/instaglass-web-v1.5.zip) · [All releases](https://github.com/nm621532-byte/instagram-clone-techbroz/releases)
 
 > ⚠️ **Disclaimer:** Educational project by **Tech Bro Z**, not affiliated with Instagram/Meta. Name, logo and design are original.
 > (The repo name stays `instagram-clone-techbroz`; the app was called InstaGlass in v1.0 and is **Private Insta** from v1.1.)
 
 <p>
-<img src="docs/screenshots/v14_upload.jpg" width="200"> <img src="docs/screenshots/v14_reel_actions.jpg" width="200"> <img src="docs/screenshots/v14_share_sheet.jpg" width="200"> <img src="docs/screenshots/v14_classic.jpg" width="200">
+<img src="docs/screenshots/v15_privacy_center.jpg" width="200"> <img src="docs/screenshots/v15_chat_lock.jpg" width="200"> <img src="docs/screenshots/v15_locked_folder.jpg" width="200"> <img src="docs/screenshots/v15_vanish.jpg" width="200">
 </p>
 
-## 🆕 v1.4 — Naya upload, Classic mode, fresh Reels ✨ (Hinglish)
+## 🆕 v1.5 — Privacy update 🔒 (Hinglish)
+- **Privacy Center** (Settings → Privacy Center): saari privacy settings ek jagah, simple English description ke saath.
+- **Chat Lock:** kisi bhi chat pe ••• (ya long-press) → *Lock chat*. Locked chats inbox se hat ke **Locked chats** folder mein chali jaati hain — sirf **Chat PIN** (4–6 digit) se khulti hain. 5 galat PIN = 5 minute lockout. PIN bhool gaye? Account password se naya PIN.
+- Locked chat ka notification sirf **"New message"** dikhata hai — na naam, na message.
+- **Hidden chats:** chat ko poora chhupa do (inbox mein dikhegi hi nahi), Privacy Center → Hidden chats se PIN daal ke kholo.
+- **App Lock:** app kholte hi PIN (har phone/browser pe). Background mein Now / 1 / 5 / 15 / 60 min ke baad khud lock. Android app mein **fingerprint** se bhi khulta hai.
+- **Vanish mode:** chat ke ••• → Vanish mode — message dekhne ke baad, ya 1 ghante / 24 ghante baad server se delete. Dono ko banner dikhta hai.
+- **View once photo/video:** camera → *View once* — ek hi baar khulega, phir server se file delete.
+- App background mein jaate hi chats **blur**; Android app locked/vanish chats aur view-once mein **screenshot block** karta hai (web pe screenshot detect nahi ho sakta).
+- **Naya logo "Ghosty" 👻🔒** — app icon, splash screen, website icon sab naya (Noor ne logo 9 choose kiya).
+- Naye toggles: **Last seen chhupao**, **Followers/Following list chhupao**, **Screenshot block**. Private account, follow requests, read receipts, restrict, block, Close Friends — sab pehle jaise.
+
+## v1.4 — Naya upload, Classic mode, fresh Reels ✨ (Hinglish)
 - **Home ya Reels pe dobara tap** karo → upar scroll + bilkul naya feed (nayi order). Reels tab har baar kholne pe **poori nayi shuffle** — pehli reel bhi alag, neeche wali bhi alag; jo reels dekh li hain woh peeche chali jaati hain, ek session mein koi reel repeat nahi.
 - **Home feed pe reel tap** → full-screen Reels usi reel se shuru, swipe karo aur reels aayengi; Back dabao → Home wahi scroll position pe.
 - **Classic mode** (Settings → Customise): ek tap mein flat purana Instagram look — no glass, no blur, no glow. Light + dark dono mein, aapke account pe save hota hai. Default abhi bhi Liquid Glass.
@@ -89,6 +101,15 @@ A full, working Instagram-style social app with an original **liquid glass** des
 - 💌 Real-time DMs (Server-Sent Events): text, photos, shared posts, typing, Seen, unsend, **message requests**
 - 🔔 Notifications · 🔎 explore + search · 👤 profiles with website, pronouns and accent colour
 
+### v1.5 — Privacy Center, Chat Lock, App Lock, vanish mode, view once
+- **Chat PIN** (4–6 digits, salted scrypt hash, never returned by the API). Wrong tries are counted on the account: 5 wrong → 429 lockout for 5 minutes (`PIN_LOCKOUT_MS`). A correct PIN opens locked + hidden chats on that one session for 10 minutes; leaving the private area locks them again.
+- **Chat Lock / Hidden chats** — `POST|DELETE /api/chat-lock/chats/:username`, `POST|DELETE /api/hidden-chats/:username` (always *my* chat with that user, so nobody can lock or open someone else's chat). `GET /api/inbox` leaves them out and returns only a locked count; `GET /api/inbox/locked|hidden`, `GET|POST /api/dm/:user`, `GET /api/messages/:id` answer **423** without the PIN. Live notifications for them carry no name and no text.
+- **App Lock** — `POST /api/app-lock` (on / change PIN), `PUT` (auto-lock minutes), `DELETE` (off, needs PIN), `POST /api/app-lock/verify`, `/lock`, `/alive` (heartbeat). Every other API answers **423** for a locked session; a session idle longer than the auto-lock time locks itself on the server. **Fingerprint (Android app)**: `POST /api/app-lock/bio` gives the phone a random device key; the app keeps it behind Android's BiometricPrompt and sends it to `POST /api/app-lock/bio-verify`; the server stores only its hash. Fingerprint isn't available in a browser (PIN only there).
+- **Vanish mode** — `PUT /api/dm/:user/vanish {mode: off|seen|1h|24h}`. Messages are hard-deleted when the timer ends, or when the reader has seen them and leaves the chat (`POST /api/dm/:user/close`).
+- **View once** — `POST /api/dm/:user {media, viewOnce:true}` (photo or video). The file is never served by `/media/`; `POST /api/messages/:id/open` (receiver only, once) returns it and deletes it (second open = 410, old file URL = 404).
+- **New app icon "Ghosty"** (logo 9): Android adaptive launcher icon (all densities + round), splash screens, favicon, apple-touch-icon and PWA icons (192/512 + maskable), in-app logo.
+- **Settings** — `lastSeen`, `hideFollowLists` (lists 403 for others; counts stay), `screenshotBlock` (Android app sets FLAG_SECURE). Chats blur while the app is in the background.
+
 ### v1.4 — upload editor, Classic mode, fresh feeds
 - Re-tap Home / Reels: scroll to top + a new seeded order (`/api/feed|reels?seed=&offset=`; followed posts from the last 3 days stay first on Home). Every Reels open gets a new seed; reels you already watched (tracked per user, newest 3,000) go after unseen ones; the order is fixed for the session so paging never repeats.
 - Tapping a video on Home opens Reels at that reel (`#/reels/<id>`, `start=<id>` server-side, only if you may see it); Back returns to Home at the same scroll position.
@@ -128,7 +149,7 @@ Admin follower/like/comment boosts create **bot accounts** (flag `isBot`, no pas
 - Private accounts, blocks, Close Friends and hidden stories are checked on every read **and** on the media file URLs.
 - DMs are addressed as "me + other user"; DM photos are served only to the two people in that chat.
 - Uploads are checked by their real bytes and size; text is rendered as text + strict CSP; CSRF guard (`X-IG` header); no password hash in any response or data export.
-- `test/smoke.mjs` — **321 checks** (the 70 from v1.0 + privacy, follow requests, Close Friends, block, DM permissions, comments off, hidden words, password change, sessions, export, deactivate, "another user cannot change my settings", admin-only APIs, and v1.2 bot boosts: list fills with named bots, pagination, reset keeps real follows, bot likes/comments, bots cannot log in; v1.3 reels import: 3 sample reels, idempotent re-run, non-admin 403, path traversal blocked, Range 206, posters, feed/reels/explore pagination; `IG_DESTRUCTIVE=1` also tests "delete all imported"; v1.4: Classic mode per user, editor validation, drafts owner-only (404 for others, files private), audience followers/close friends on post/feed/profile/media, tag notifications, music/hashtags, fresh reels order with no repeats, deep link start=<id>). Run it before every deploy:
+- `test/smoke.mjs` — **395 checks** (v1.5 adds 74 privacy checks: wrong PIN, lockout, locked chat not in the inbox API, outsiders can't read or lock a chat, vanish deletion, view-once 404, App Lock on other sessions; before that **321 checks** (the 70 from v1.0 + privacy, follow requests, Close Friends, block, DM permissions, comments off, hidden words, password change, sessions, export, deactivate, "another user cannot change my settings", admin-only APIs, and v1.2 bot boosts: list fills with named bots, pagination, reset keeps real follows, bot likes/comments, bots cannot log in; v1.3 reels import: 3 sample reels, idempotent re-run, non-admin 403, path traversal blocked, Range 206, posters, feed/reels/explore pagination; `IG_DESTRUCTIVE=1` also tests "delete all imported"; v1.4: Classic mode per user, editor validation, drafts owner-only (404 for others, files private), audience followers/close friends on post/feed/profile/media, tag notifications, music/hashtags, fresh reels order with no repeats, deep link start=<id>). Run it before every deploy:
 ```bash
 node server.js &
 node test/smoke.mjs http://localhost:3000
@@ -154,11 +175,11 @@ release/         # SHA-256 of each signed APK
 .github/         # workflow that attaches the APK + ZIP to each release
 ```
 
-### Download (Release v1.4)
-- Android APK: https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.4/InstaGlass-v1.4.apk (mirror: https://instaglass-live.sites.tab.bot/InstaGlass-v1.4.apk) — installs over v1.3 / v1.2 / v1.1 / v1.0 (same signature, versionCode 5)
-- Web app ZIP: https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.4/instaglass-web-v1.4.zip
-- APK SHA-256: `06bb91d4d218779a1033b7bd741b657866153e043b40963041b29a8706b934df`
-- Older: [v1.3](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/tag/v1.3) · [v1.2](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/tag/v1.2) · [v1.1](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/tag/v1.1) · [v1.0](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/tag/v1.0)
+### Download (Release v1.5)
+- Android APK: https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.5/InstaGlass-v1.5.apk (mirror: https://instaglass-live.sites.tab.bot/InstaGlass-v1.5.apk) — installs over v1.4 / v1.3 / v1.2 / v1.1 / v1.0 (same signature, versionCode 6)
+- Web app ZIP: https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.5/instaglass-web-v1.5.zip
+- APK SHA-256: `29a551cf1c66e4238bd3a041daf3529649084f712d7966e3f25819794ee2e83a`
+- Older: [v1.4](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/tag/v1.4) · [v1.3](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/tag/v1.3) · [v1.2](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/tag/v1.2) · [v1.1](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/tag/v1.1) · [v1.0](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/tag/v1.0)
 
 ---
 Made by **Tech Bro Z** — YouTube [@techbrozdeveloper](https://www.youtube.com/@techbrozdeveloper) · Instagram [@tech_bro_z_1](https://www.instagram.com/tech_bro_z_1/)

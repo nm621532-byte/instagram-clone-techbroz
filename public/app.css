@@ -505,3 +505,92 @@ html.classic .badge{background:#ff3040}html.classic .dot-badge{background:#ff304
 html.classic *{transition-duration:.12s}
 
 .reels-title{display:flex;align-items:center;gap:8px;pointer-events:none}.reels-title .reels-back{pointer-events:auto;width:36px;height:36px;display:flex;align-items:center;justify-content:center;color:#fff}.reels-title .reels-back svg{width:26px;height:26px}
+
+/* ================= v1.5 privacy: PIN pad, App Lock screen, Chat Lock, vanish mode, view once, Privacy Center ================= */
+.pin-ov{position:fixed;inset:0;z-index:200;display:flex;align-items:center;justify-content:center;background:rgba(6,5,20,.72);-webkit-backdrop-filter:blur(26px) saturate(1.3);backdrop-filter:blur(26px) saturate(1.3);animation:fade .2s;padding:calc(12px + var(--safe-t)) 12px calc(12px + var(--safe-b))}
+.pin-ov.out{opacity:0;transition:opacity .2s}
+.pin-ov.lockscreen{z-index:300;background:radial-gradient(120% 80% at 20% 0%,#2a1660,#0b0b1a 70%)}
+html.light .pin-ov.lockscreen{background:radial-gradient(120% 80% at 20% 0%,#e9ddff,#eef1ff 70%)}
+html.light .pin-ov{background:rgba(238,241,255,.8)}
+.pin-box{position:relative;width:100%;max-width:340px;display:flex;flex-direction:column;align-items:center;text-align:center}
+.pin-close{position:absolute;right:-4px;top:-8px}
+.pin-ic{width:58px;height:58px;border-radius:20px;display:flex;align-items:center;justify-content:center;background:var(--grad);color:#fff;box-shadow:0 10px 30px rgba(139,92,246,.45);margin-bottom:14px}
+.pin-ic svg{width:28px;height:28px}
+.pin-box h2{margin:0 0 14px;font-size:20px;font-weight:750}
+.pin-dots{display:flex;gap:14px;height:20px;align-items:center;margin-bottom:10px}
+.pin-dots i{width:14px;height:14px;border-radius:50%;border:2px solid var(--muted);transition:all .15s}
+.pin-dots i.opt{opacity:.45;transform:scale(.8)}
+.pin-dots i.on{background:var(--text);border-color:var(--text);opacity:1;transform:scale(1.05)}
+.pin-dots.shake{animation:pinShake .4s}
+@keyframes pinShake{0%,100%{transform:none}20%{transform:translateX(-10px)}40%{transform:translateX(9px)}60%{transform:translateX(-6px)}80%{transform:translateX(4px)}}
+.pin-msg{min-height:38px;font-size:13.5px;color:var(--muted);padding:0 10px;line-height:1.35}
+.pin-msg.bad{color:#fb7185;font-weight:600}
+.pin-keys{display:grid;grid-template-columns:repeat(3,76px);gap:14px 26px;margin:6px 0 14px}
+.pin-keys button,.pin-keys span{width:76px;height:76px;border-radius:50%;font-size:28px;font-weight:500;display:flex;align-items:center;justify-content:center}
+.pin-keys button{background:var(--glass-strong);border:1px solid var(--glass-border);box-shadow:inset 0 1px 0 var(--hi);transition:transform .12s,background .12s}
+.pin-keys button:active{transform:scale(.9);background:rgba(255,255,255,.28)}
+.pin-keys .pin-del{background:none;border:0;box-shadow:none;font-size:24px}
+.pin-keys .pin-x{background:none;border:0;box-shadow:none;color:var(--accent)}
+.pin-keys .pin-x svg{width:38px;height:38px}
+.pin-ok{height:46px;min-width:170px;border-radius:999px;background:var(--grad);color:#fff;font-weight:700;font-size:16px}
+.pin-ok[disabled]{opacity:.35}
+.pin-ov.busy .pin-ok{opacity:.6}
+.pin-ov.locked-out .pin-keys{opacity:.35;pointer-events:none}
+.pin-forgot{margin-top:14px;color:var(--accent);font-weight:650;font-size:14px;padding:8px}
+@media (max-height:640px){.pin-keys{grid-template-columns:repeat(3,64px);gap:10px 24px}.pin-keys button,.pin-keys span{width:64px;height:64px;font-size:24px}.pin-ic{width:46px;height:46px;margin-bottom:8px}.pin-box h2{margin-bottom:8px;font-size:18px}}
+html.app-locked #app{visibility:hidden}
+/* chat list: ••• options, Locked chats folder */
+.row .row-more{width:34px;height:34px;opacity:.55;flex:none}
+.row .row-more svg{width:20px;height:20px}
+.locked-slot:empty{display:none}
+.locked-slot{margin-bottom:6px}
+.locked-row{background:var(--glass);border:1px solid var(--glass-border)}
+.locked-row .lk-ic{width:50px;height:50px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:var(--grad);color:#fff;flex:none}
+.locked-row .lk-ic svg{width:24px;height:24px}
+.locked-row .chev{width:20px;height:20px;opacity:.6}
+.folder-info{text-align:left;margin:4px 6px 12px;font-size:13px}
+.menu-list{display:flex;flex-direction:column;padding:0 8px 6px}
+.mi{display:flex;flex-direction:column;align-items:flex-start;gap:2px;width:100%;padding:13px 14px;border-radius:14px;text-align:left;font-size:15.5px;font-weight:600;position:relative}
+.mi small{font-weight:450;font-size:12.5px;color:var(--muted)}
+.mi:active,.mi.on{background:rgba(255,255,255,.08)}
+.mi .tick{position:absolute;right:16px;top:50%;transform:translateY(-50%);color:var(--accent)}
+.lock-tag{position:sticky;top:calc(58px + var(--safe-t));z-index:5;margin:6px auto 0;width:max-content;max-width:92%;padding:6px 12px;border-radius:999px;font-size:12px;font-weight:600;background:var(--glass-strong);border:1px solid var(--glass-border);-webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px)}
+/* vanish mode */
+.vanish-banner{display:flex;align-items:center;gap:10px;margin:8px 12px 0;padding:10px 12px;border-radius:18px;background:linear-gradient(135deg,rgba(20,14,40,.85),rgba(60,20,90,.75));color:#fff;border:1px solid rgba(167,139,250,.45)}
+.vanish-banner>span{width:28px;height:28px;flex:none}.vanish-banner>span svg{width:100%;height:100%}
+.vanish-banner>div{flex:1;min-width:0}.vanish-banner b{display:block;font-size:14px}.vanish-banner small{display:block;font-size:12px;opacity:.8}
+.vanish-banner .gbtn{color:#fff;background:rgba(255,255,255,.14);border-color:rgba(255,255,255,.3)}
+.chat.vanish{background:radial-gradient(90% 60% at 50% 0%,rgba(76,29,149,.35),transparent 70%)}
+.msg.vmsg{border-style:dashed}
+.msg.me.vmsg{background:linear-gradient(135deg,#312e81,#6d28d9 60%,#a21caf)}
+.msg-sys{align-self:center;display:flex;align-items:center;gap:6px;max-width:88%;margin:10px 0;padding:6px 12px;border-radius:999px;font-size:12px;color:var(--muted);background:var(--glass);text-align:center}
+.msg-sys span{width:16px;height:16px;flex:none}.msg-sys span svg{width:100%;height:100%}
+/* view once */
+.msg.vonce{display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer;min-width:180px}
+.msg.vonce .vo-ic{font-size:22px}
+.msg.vonce b{display:block;font-size:14px}.msg.vonce small{display:block;font-size:12px;opacity:.8}
+.msg.vonce.used{opacity:.6;cursor:default}
+.vo-viewer{position:fixed;inset:0;z-index:250;background:#000;display:flex;align-items:center;justify-content:center;flex-direction:column;-webkit-user-select:none;user-select:none}
+.vo-viewer img,.vo-viewer video{max-width:100%;max-height:82vh;object-fit:contain;-webkit-touch-callout:none}
+.vo-top{position:absolute;top:calc(8px + var(--safe-t));left:0;right:0;display:flex;justify-content:space-between;align-items:center;padding:0 10px 0 16px;color:#fff;font-weight:650}
+.vo-foot{position:absolute;bottom:calc(16px + var(--safe-b));color:rgba(255,255,255,.7);font-size:12.5px;padding:0 20px;text-align:center}
+/* blur private things while the app is in the background / app switcher */
+html.bg-blur .chat,html.bg-blur .vo-viewer img,html.bg-blur .vo-viewer video,html.bg-blur .list .row .meta small{filter:blur(16px);transition:filter .05s}
+/* Privacy Center */
+.pc-link{display:flex;align-items:center;gap:12px;padding:14px 16px;border-radius:var(--r);margin:4px 0 6px}
+.pc-link .st{flex:1;min-width:0}.pc-link .st b{display:block}.pc-link .st small{display:block;color:var(--muted);font-size:12.5px}
+.pc-link .chev{width:20px;height:20px;opacity:.6}
+.pc-ic{width:42px;height:42px;border-radius:14px;flex:none;display:flex;align-items:center;justify-content:center;background:var(--grad);color:#fff}
+.pc-ic svg{width:24px;height:24px}
+.pc-hero{display:flex;gap:12px;align-items:center;padding:16px;border-radius:var(--r);margin:4px 0 8px}
+.pc-hero b{display:block;font-size:16px}.pc-hero small{display:block;color:var(--muted);font-size:12.5px;margin-top:2px;line-height:1.35}
+.sic.big{font-size:20px;align-items:center;justify-content:center}
+.srow.danger-row .st b{color:#fb7185}
+.fp-dev{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:13.5px}
+.vtag{font-size:13px}
+html.classic .pin-ov,html.classic .lock-tag{-webkit-backdrop-filter:none;backdrop-filter:none}
+html.classic .pin-ov{background:var(--bg1)}
+html.classic .pin-keys button{background:transparent;box-shadow:none;border:1px solid var(--line)}
+html.classic .pin-ic,html.classic .pc-ic,html.classic .locked-row .lk-ic{background:var(--text);color:var(--bg1);box-shadow:none}
+html.classic .pin-ok{background:#0095f6}
+html.classic .vanish-banner{background:#262626;border-color:#363636}
