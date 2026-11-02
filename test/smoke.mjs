@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Private Insta (InstaGlass) smoke + security test, v1.2 (v1.1 + bot boosts). Run before EVERY publish:
+// Private Insta (InstaGlass) smoke + security test, v1.3 (v1.2 + bulk reels import). Run before EVERY publish:
 //   node test/smoke.mjs http://localhost:3000        (or the live URL)
 // Creates throwaway users (random names), exercises every feature, then tries IDOR / auth attacks that MUST fail.
 const BASE = (process.argv[2] || 'http://localhost:3000').replace(/\/$/, '');
@@ -26,7 +26,15 @@ class Client {
   post(p, b, o) { return this.req('POST', p, b || {}, o); }
   put(p, b) { return this.req('PUT', p, b); }
   del(p) { return this.req('DELETE', p); }
+  async raw(method, path, buf, extra = {}) { // binary upload (v1.3 reels inbox)
+    const headers = Object.assign({ 'X-IG': '1', 'Content-Type': 'application/octet-stream' }, extra); if (this.cookie) headers.Cookie = this.cookie;
+    const r = await fetch(BASE + path, { method, headers, body: buf }); const ct = r.headers.get('content-type') || '';
+    return { status: r.status, data: ct.includes('json') ? await r.json() : (await r.arrayBuffer(), null) };
+  }
 }
+import { readFileSync } from 'node:fs';
+const FIX = new URL('./fixtures/', import.meta.url);
+const SAMPLE_MP4 = readFileSync(new URL('sample.mp4', FIX)), SAMPLE_JPG = readFileSync(new URL('sample.jpg', FIX));
 function stream(client) { // minimal SSE reader
   const events = []; const ctrl = new AbortController();
   const ready = fetch(BASE + '/api/stream', { headers: { Cookie: client.cookie }, signal: ctrl.signal }).then(async r => {
@@ -294,7 +302,7 @@ async function waitFor(fn, ms = 6000) { const t = Date.now(); while (Date.now() 
   ok((await A.get('/api/users/' + ud)).status === 200, 'D visible again');
 
   console.log('— v1.1 admin panel is admin-only');
-  for (const [m, u] of [['GET', '/api/admin/stats'], ['GET', '/api/admin/users'], ['PUT', '/api/admin/users/' + ub], ['PUT', '/api/admin/posts/' + ppid], ['DELETE', '/api/admin/posts/' + ppid], ['POST', '/api/admin/reset-boosts'], ['GET', '/api/admin/bots'], ['DELETE', '/api/admin/users/' + ua + '/bots']])
+  for (const [m, u] of [['GET', '/api/admin/stats'], ['GET', '/api/admin/users'], ['PUT', '/api/admin/users/' + ub], ['PUT', '/api/admin/posts/' + ppid], ['DELETE', '/api/admin/posts/' + ppid], ['POST', '/api/admin/reset-boosts'], ['GET', '/api/admin/bots'], ['DELETE', '/api/admin/users/' + ua + '/bots'], ['GET', '/api/admin/reels'], ['GET', '/api/admin/reels/inbox'], ['POST', '/api/admin/reels/import?limit=3'], ['PUT', '/api/admin/reels/settings'], ['DELETE', '/api/admin/reels'], ['DELETE', '/api/admin/reels/inbox/1.mp4']])
     ok((await Bc.req(m, u, m === 'GET' ? undefined : { verified: true, addLikes: 5 })).status === 403, 'normal user: ' + m + ' ' + u + ' -> 403');
   ok((await Bc.post('/api/admin/unlock', { password: pw })).status === 403, 'normal user cannot unlock the admin panel');
   ok((await A.get('/api/posts/' + ppid)).status === 200, 'post untouched by those attempts');
@@ -371,6 +379,55 @@ async function waitFor(fn, ms = 6000) { const t = Date.now(); while (Date.now() 
     ok((await M.put('/api/admin/users/' + ud, { suspended: false })).status === 200 && (await D.post('/api/login', { username: ud, password: pw })).status === 200, 'admin un-suspends D');
     ok((await M.req('DELETE', '/api/admin/comments/' + hc.data.comment.id)).status === 200, 'admin deletes any comment');
     ok((await M.req('DELETE', '/api/admin/posts/' + bp.data.post.id)).status === 200 && (await Bc.get('/api/posts/' + bp.data.post.id)).status === 404, 'admin deletes any post');
+
+    console.log('— v1.3 bulk reels import');
+    const tag = String(1000 + Math.floor(Math.random() * 8999)); const names = [1, 2, 3].map(i => '9' + tag + i + '.mp4'); // 6-digit test names (real reels are 4 digits)
+    const meta = (i) => ({ 'x-reel-meta': Buffer.from(JSON.stringify({ title: 'Smoke test reel ' + i + ' 🔥 #anime', duration: 2, source_name: 'test ' + i })).toString('base64') });
+    ok((await Bc.raw('PUT', '/api/admin/reels/inbox/' + names[0], SAMPLE_MP4, meta(1))).status === 403, 'non-admin cannot upload to the reels import folder (403)');
+    ok((await Bc.post('/api/admin/reels/import?limit=3')).status === 403 && (await Bc.req('DELETE', '/api/admin/reels')).status === 403, 'non-admin cannot run or delete the import (403)');
+    for (let i = 0; i < 3; i++) ok((await M.raw('PUT', '/api/admin/reels/inbox/' + names[i], SAMPLE_MP4, meta(i + 1))).status === 201 && (await M.raw('PUT', '/api/admin/reels/inbox/' + names[i].replace('.mp4', '.jpg'), SAMPLE_JPG)).status === 201, 'admin uploads sample reel ' + (i + 1) + ' (+ poster) to the import folder');
+    ok((await M.raw('PUT', '/api/admin/reels/inbox/' + names[0], SAMPLE_MP4, meta(1))).data.skipped === true, 'same upload again is skipped (idempotent)');
+    ok((await M.raw('PUT', '/api/admin/reels/inbox/9' + tag + '9.mp4', Buffer.from('not a video at all, just text bytes here'))).status === 415, 'non-mp4 bytes rejected (415)');
+    ok([400, 404].includes((await M.raw('PUT', '/api/admin/reels/inbox/..%2F..%2Fdb.json', SAMPLE_MP4)).status) && (await M.raw('PUT', '/api/admin/reels/inbox/evil.mp4', SAMPLE_MP4)).status === 400, 'path traversal / bad names rejected');
+    const im1 = await M.post('/api/admin/reels/import?limit=10&only=' + names.join(','));
+    const recs = (await M.get('/api/admin/reels?files=' + names.join(','))).data.records;
+    ok(im1.status === 200 && names.every(n => recs[n] && recs[n].pid), 'admin imports the 3 sample files as reels');
+    const before3 = (await M.get('/api/admin/reels')).data.imported;
+    const im2 = await M.post('/api/admin/reels/import?limit=10&only=' + names.join(','));
+    ok(im2.status === 200 && im2.data.imported === 0 && (await M.get('/api/admin/reels')).data.imported === before3, 're-running the import adds nothing (idempotent by file name)');
+    const rp = (await Bc.get('/api/posts/' + recs[names[0]].pid)).data.post;
+    ok(rp && rp.type === 'video' && rp.media === '/reels-media/' + names[0] && rp.poster === '/reels-media/' + names[0].replace('.mp4', '.jpg') && /Smoke test reel 1/.test(rp.caption), 'imported reel has video URL, poster and manifest caption');
+    ok(rp.likes >= 20 && rp.likes <= 800 && rp.comments <= 5 && rp.views > rp.likes && rp.user && rp.user.username && !rp.user.isPrivate, 'reel has 20–800 bot likes, 0–5 bot comments, views, a public bot owner');
+    ok(Date.now() - rp.created < 31 * 864e5 && rp.created <= Date.now(), 'reel time is backdated inside the last 30 days');
+    ok((await Bc.get('/api/posts/' + rp.id + '/likes?limit=5')).data.users.length === 5, 'liked-by list of an imported reel shows named bots');
+    const rg = await fetch(BASE + '/reels-media/' + names[0], { headers: { Range: 'bytes=0-99' } }); const rgb = Buffer.from(await rg.arrayBuffer());
+    ok(rg.status === 206 && rgb.length === 100 && /^bytes 0-99\/\d+$/.test(rg.headers.get('content-range') || '') && (rg.headers.get('content-type') || '').startsWith('video/mp4'), 'reel video streams with HTTP Range (206)');
+    ok(/max-age=\d+/.test(rg.headers.get('cache-control') || '') && rgb.slice(4, 8).toString() === 'ftyp', 'reel video has cache headers and is the real mp4');
+    ok((await fetch(BASE + '/reels-media/' + names[1].replace('.mp4', '.jpg'))).status === 200, 'reel poster image is served');
+    ok((await fetch(BASE + '/reels-media/..%2Fdb.json')).status === 404 && (await fetch(BASE + '/reels-media/12345678.mp4?nc=' + rnd)).status === 404, 'reels-media serves only imported files (no traversal)');
+    // feed pagination: a brand-new account (follows nobody) already gets reels in Home, Reels and Explore, page by page
+    const N = new Client('n'); await N.post('/api/signup', { username: 'tn_' + rnd, password: pw, name: 'Test N' });
+    const f1 = await N.get('/api/feed?limit=2'); ok(f1.status === 200 && f1.data.posts.length === 2 && f1.data.more === true, 'new user home feed is not empty (reels mixed in), page 1');
+    const f2 = await N.get('/api/feed?limit=2&before=' + f1.data.posts[1].created);
+    ok(f2.data.posts.length >= 1 && !f2.data.posts.some(x => f1.data.posts.some(y => y.id === x.id)) && f2.data.posts[0].created <= f1.data.posts[1].created, 'home feed page 2 continues without repeats');
+    const r1 = await N.get('/api/reels?limit=2'), r2 = await N.get('/api/reels?limit=2&before=' + r1.data.posts[1].created);
+    ok(r1.data.posts.length === 2 && r1.data.more && r2.data.posts.length >= 1 && !r2.data.posts.some(x => r1.data.posts.some(y => y.id === x.id)), 'reels tab paginates');
+    const e1 = await N.get('/api/explore?limit=2'); ok(e1.data.posts.length === 2 && e1.data.more === true, 'explore paginates');
+    ok((await N.get('/api/reels?limit=500')).data.posts.length <= 30, 'page size is capped (no 3,000-item responses)');
+    await N.req('DELETE', '/api/me', { password: pw });
+    const ad = await M.get('/api/admin/reels'); ok(ad.status === 200 && ad.data.imported >= 3 && typeof ad.data.auto === 'boolean' && ad.data.recent.length >= 1, 'admin Reels import tab: count, auto flag, latest list');
+    const auto0 = ad.data.auto;
+    ok((await M.put('/api/admin/reels/settings', { auto: !auto0 })).data.auto === !auto0 && (await M.put('/api/admin/reels/settings', { auto: auto0 })).data.auto === auto0, 'admin can switch auto-import off/on');
+    ok((await M.get('/api/admin/posts')).data.posts.every(x => !x.imported), 'admin Posts tab lists real posts only');
+    if (process.env.IG_DESTRUCTIVE === '1') { // local only: wipes every imported reel
+      const dl = await M.req('DELETE', '/api/admin/reels'); ok(dl.status === 200 && dl.data.deleted >= 3 && (await M.get('/api/admin/reels')).data.imported === 0 && (await Bc.get('/api/posts/' + rp.id)).status === 404, '"Delete all imported reels" removes them all (and turns auto-import off)');
+      ok((await M.post('/api/admin/reels/import?limit=10&only=' + names.join(','))).data.imported === 3, 'after delete-all the files can be imported again');
+      await M.put('/api/admin/reels/settings', { auto: auto0 });
+    }
+    const recs2 = (await M.get('/api/admin/reels?files=' + names.join(','))).data.records;
+    let cleaned = 0; for (const n of names) { if (recs2[n] && recs2[n].pid && (await M.req('DELETE', '/api/admin/posts/' + recs2[n].pid)).status === 200) cleaned++; await M.req('DELETE', '/api/admin/reels/inbox/' + n); await M.req('DELETE', '/api/admin/reels/inbox/' + n.replace('.mp4', '.jpg')); }
+    ok(cleaned === 3 && (await M.get('/api/admin/reels/inbox')).data.files[names[0]] === undefined, 'test reels + test files removed');
+    ok((await M.post('/api/admin/reels/import?limit=10&only=' + names.join(','))).data.imported === 0 && (await fetch(BASE + '/reels-media/' + names[0] + '?nc=' + rnd)).status === 404, 'a deleted reel is not imported again and its file is gone');
     await M.post('/api/logout');
   } else console.log('  (admin positive checks skipped: set IG_ADMIN_USER / IG_ADMIN_PASS)');
   await A.put('/api/settings', { private: false, notif: { likes: true } });

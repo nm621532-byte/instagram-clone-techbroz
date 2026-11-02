@@ -10,7 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 const APP_NAME = 'Private Insta';
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, 'data'));
@@ -22,6 +22,12 @@ const MAX_BODY = 24 * 1024 * 1024;           // JSON body (base64 media inside)
 const MAX_IMAGE = 8 * 1024 * 1024;           // decoded image bytes
 const MAX_VIDEO = 15 * 1024 * 1024;          // decoded video bytes
 fs.mkdirSync(MEDIA_DIR, { recursive: true });
+// v1.3 bulk reels import: the admin import reads ONLY IMPORT_DIR (+ its manifest.json); imported videos live in REELS_DIR (hardlinked, never copied twice)
+const REELS_DIR = path.join(DATA_DIR, 'reels');
+const IMPORT_DIR = path.resolve(process.env.IMPORT_DIR || path.join(DATA_DIR, 'reel-inbox'));
+const MAX_REEL_BYTES = 40 * 1024 * 1024;
+fs.mkdirSync(REELS_DIR, { recursive: true });
+try { fs.mkdirSync(IMPORT_DIR, { recursive: true }); } catch (e) { console.error('import dir', e.message); }
 
 // ---------------------------------------------------------------- database (JSON file)
 let db = { users: {}, sessions: {}, follows: {}, posts: {}, comments: {}, stories: {}, messages: {}, notifs: {}, media: {}, requests: {}, accepted: null };
@@ -71,7 +77,15 @@ function settingsOf(u) {
   return s;
 }
 function L(u) { if (u.isBot) return BOT_LISTS; for (const k of LIST_KEYS) if (!Array.isArray(u[k])) u[k] = []; return u; }
+function internIds() { // one shared string per user id (likes/follows arrays of thousands of reels stay small in memory)
+  const canon = new Map(); for (const k of Object.keys(db.users)) canon.set(k, db.users[k].id = k);
+  const fix = (arr) => { if (Array.isArray(arr)) for (let i = 0; i < arr.length; i++) { const c = canon.get(arr[i]); if (c) arr[i] = c; } };
+  for (const p of Object.values(db.posts)) { fix(p.likes); fix(p.views); fix(p.saves); }
+  for (const k of Object.keys(db.follows)) fix(db.follows[k]);
+  for (const c of Object.values(db.comments)) { const u = canon.get(c.uid); if (u) c.uid = u; }
+}
 function migrate() {
+  internIds();
   let changed = false;
   if (!db.requests || typeof db.requests !== 'object') { db.requests = {}; changed = true; }
   if (!db.accepted || typeof db.accepted !== 'object') { // every v1.0 conversation counts as accepted (nothing moves to Requests)
@@ -81,6 +95,10 @@ function migrate() {
   for (const p of Object.values(db.posts)) { if (p.commentsOff === undefined) { p.commentsOff = false; p.hideLikes = false; changed = true; } }
   if ((db.schema || 1) < 2) { db.schema = 2; changed = true; }
   if (db.schema < 3) { migrateBoostsToBots(); db.schema = 3; changed = true; } // v1.2: boost numbers -> bot entries (same totals)
+  if (db.schema < 4) { // v1.3: keep a copy of the v1.2 database before any reels get imported
+    try { if (fs.existsSync(DB_FILE)) fs.copyFileSync(DB_FILE, path.join(DATA_DIR, 'db.backup-v1.2.json')); } catch (e) { console.error('backup', e.message); }
+    RI(); db.schema = 4; changed = true;
+  }
   if (changed) save();
 }
 
@@ -240,7 +258,7 @@ function setBotLikes(x, n, opts = {}) {
     if (n > BOT_POOL_CAP) throw httpErr(400, 'Max ' + BOT_POOL_CAP.toLocaleString('en-IN') + ' bot likes per post');
     ensureBots(n);
     const have = new Set(cur), ids = botIds(), start = crypto.randomInt(ids.length); let added = 0;
-    for (let i = 0; i < ids.length && added < add; i++) { const b = ids[(start + i) % ids.length]; if (!have.has(b)) { x.likes.push(b); added++; } }
+    for (let i = 0; i < ids.length && added < add; i++) { const b = ids[(start + i) % ids.length]; if (!have.has(b) && b !== opts.exclude) { x.likes.push(b); added++; } }
   } else if (n < cur.length) { const drop = new Set(cur.slice(n)); x.likes = x.likes.filter(i => !drop.has(i)); }
   save(); return n;
 }
@@ -254,10 +272,10 @@ function setBotComments(x, n, opts = {}) {
     if (!opts.noCap && add > BOT_COMMENT_ACTION_CAP) throw httpErr(400, 'Max ' + BOT_COMMENT_ACTION_CAP + ' comments per action');
     if (n > BOT_COMMENT_CAP) throw httpErr(400, 'Max ' + BOT_COMMENT_CAP + ' bot comments per post');
     // each comment from a different bot, texts never repeated back-to-back, owner's hidden words respected, no notifications
-    ensureBots(Math.max(n * 2, 50)); const used = new Set(cur.map(c => c.uid));
+    ensureBots(Math.max(n * 2, 50)); const used = new Set(cur.map(c => c.uid)); if (opts.exclude) used.add(opts.exclude);
     const free = botIds().filter(i => !used.has(i)); for (let i = free.length - 1; i > 0; i--) { const j = crypto.randomInt(i + 1); [free[i], free[j]] = [free[j], free[i]]; }
     const owner = db.users[x.uid]; const words = owner ? settingsOf(owner).hiddenWords.filter(Boolean) : [];
-    const texts = BOT_COMMENTS.filter(t => !words.some(w => t.toLowerCase().includes(w))); const pool = texts.length >= 2 ? texts : ['🔥🔥', '❤️❤️'];
+    const texts = (opts.texts || BOT_COMMENTS).filter(t => !words.some(w => t.toLowerCase().includes(w))); const pool = texts.length >= 2 ? texts : ['🔥🔥', '❤️❤️'];
     const t0 = Math.max(x.created, cur.length ? cur[cur.length - 1].created : 0), span = Math.max(60e3, now() - t0);
     const times = Array.from({ length: add }, () => Math.min(now(), t0 + 1e3 + crypto.randomInt(Math.max(1, Math.floor(span - 1e3))))).sort((a, b) => a - b);
     let prev = cur.length ? cur[cur.length - 1].text : null;
@@ -284,6 +302,140 @@ function migrateBoostsToBots() { // v1.1 stored boosts as plain numbers; v1.2 tu
     if (x.bonusComments > 0) { const k = Math.min(x.bonusComments, BOT_COMMENT_CAP); setBotComments(x, botCommentsOf(x).length + k, { noCap: true }); if (x.bonusComments - k > 0) x.bonusComments -= k; else delete x.bonusComments; }
   }
 }
+
+// ---------------------------------------------------------------- v1.3 bulk REELS import (admin only)
+// Videos + manifest.json are read ONLY from IMPORT_DIR. Each video becomes a Reel owned by a public bot "anime page",
+// backdated over the past ~30 days, with a natural spread of bot likes / bot comments. Idempotent by file name.
+const REEL_FILE_RE = /^\d{1,6}\.mp4$/;
+const REEL_POSTER_RE = /^\d{1,6}\.jpg$/;
+const REEL_OWNER_TARGET = 240;
+const ANIME_COMMENTS = ['Goosebumps aa gaye 🔥', 'Edit OP hai bhai 🔥🔥', 'Ye kaunsa anime hai? 😍', 'Song ka naam bata do 🎧', 'Naruto fan here 🧡', 'Itachi 😭🖤', 'Gojo supremacy 😎',
+  'Luffy 🔥👒', 'Bhai kya sync kiya hai 💯', 'Repeat pe chal raha hai 🔁', 'AOT forever 🗡️', 'Zoro 🗿🔥', 'Tanjiro 🌊❤️', 'Anime is life ✨', 'Next part kab? 🙏', 'Ufff ye scene 😭',
+  'Masterpiece 👏', 'Best edit ever 🔥', 'Dil jeet liya ❤️', 'Mast edit 😍', 'Peak fiction 📈', 'Chills 🥶🔥', '🔥🔥🔥', '😍😍', '💯💯', 'Sasuke 🖤⚡', 'Goku 🐉🔥', 'Levi 🗡️😎',
+  'Ye wala scene 🥺', 'Bhai editing skills 🔥', 'Background music 🔥🎶', 'Kitni baar dekh liya 😅', 'Op edit 💥', 'Anime fans yaha aao 🙌'];
+const REEL_OWNER_BIOS = ['Anime edits daily 🔥 | Follow for more', 'Naruto • One Piece • AOT 🧡', 'Otaku hu, edits banata hu ✨', 'Daily anime reels 🎌', 'AMV editor 🎬',
+  'Anime is not cartoon 😤', 'Weeb for life 🍥', 'Edits 🎧 | Anime | Vibes', 'Gojo ka fan 😎', 'Anime lover from India 🇮🇳🎌', 'Reels on anime + music 🎶', 'Daily 1 edit 🔥'];
+const REEL_CAPTIONS = ['Ye scene 🔥 #anime #edit', 'Goosebumps 😱 #anime #animeedit', 'Kya entry thi 🔥 #anime #otaku', 'Bas dekhte raho 😍 #anime #amv'];
+function RI() { // import state lives in the db: { files: { '0001.mp4': {pid, at} | {deleted|bad} }, auto, every, batch, last }
+  if (!db.reelImport || typeof db.reelImport !== 'object') db.reelImport = {};
+  const r = db.reelImport;
+  if (!r.files || typeof r.files !== 'object') r.files = {};
+  if (r.auto === undefined) r.auto = true;
+  if (!r.every) r.every = 3;           // minutes between automatic imports
+  if (!r.batch) r.batch = 150;         // reels per automatic import
+  return r;
+}
+const logUniform = (a, b) => Math.round(Math.exp(Math.log(a) + Math.random() * (Math.log(b) - Math.log(a))));
+const posterName = (f) => f.replace(/\.mp4$/, '.jpg');
+function postMedia(p) { return p && p.reel ? '/reels-media/' + p.media : mediaUrl(p && p.media); }
+function postPoster(p) { return p && p.reel && p.reel.poster ? '/reels-media/' + posterName(p.media) : null; }
+function importPath(file) { // a file directly inside IMPORT_DIR, never anything else (no ../, no sub folders)
+  if (typeof file !== 'string' || !(REEL_FILE_RE.test(file) || REEL_POSTER_RE.test(file))) return null;
+  const f = path.join(IMPORT_DIR, file);
+  return path.dirname(f) === IMPORT_DIR ? f : null;
+}
+let manCache = { mtime: -1, map: new Map() };
+function importManifest() { // IMPORT_DIR/manifest.json: [{file, title, duration, source_name}]
+  const mf = path.join(IMPORT_DIR, 'manifest.json');
+  let st; try { st = fs.statSync(mf); } catch (e) { return manCache.map = new Map(); }
+  if (st.mtimeMs === manCache.mtime) return manCache.map;
+  const map = new Map();
+  try { const arr = JSON.parse(fs.readFileSync(mf, 'utf8')); if (Array.isArray(arr)) for (const e of arr) if (e && REEL_FILE_RE.test(String(e.file))) map.set(String(e.file), e); } catch (e) { console.error('manifest', e.message); }
+  manCache = { mtime: st.mtimeMs, map }; return map;
+}
+function setManifestEntry(file, meta) { // used by the admin upload endpoint; atomic rewrite
+  const map = new Map(importManifest());
+  map.set(file, { file, title: clean(String(meta.title || ''), 300), duration: Number(meta.duration) || null, source_name: clean(String(meta.source_name || ''), 160) });
+  const mf = path.join(IMPORT_DIR, 'manifest.json'), tmp = mf + '.' + id(4) + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify([...map.values()].sort((a, b) => a.file.localeCompare(b.file)), null, 0)); fs.renameSync(tmp, mf);
+  manCache.mtime = -1;
+}
+function inboxFiles() { try { return fs.readdirSync(IMPORT_DIR).filter(f => REEL_FILE_RE.test(f)).sort(); } catch (e) { return []; } }
+function reelOwnerUsername(first, last, taken) {
+  const f = first.toLowerCase().replace(/[^a-z]/g, ''), l = last.toLowerCase().replace(/[^a-z]/g, '') || 'x', n2 = () => String(crypto.randomInt(1, 99));
+  const forms = [() => f + '.edits', () => 'anime.' + f, () => f + '_amv', () => 'otaku.' + f, () => f + '.animefan', () => 'animeverse.' + f, () => f + 'x.edits', () => 'weeb_' + f,
+    () => f + '_otaku_' + n2(), () => 'anime_with_' + f, () => f + '.amv' + n2(), () => f + l[0] + '_edits', () => 'edits.by.' + f, () => 'desi.otaku.' + f, () => f + '.' + l + '.edits', () => 'animevibes_' + f];
+  for (let i = 0; i < 40; i++) {
+    let u = pick(forms)().replace(/[^a-z0-9._]/g, '').replace(/^[._]+|[._]+$/g, '').slice(0, 20);
+    if (i > 20) u = (u.slice(0, 15) + '_' + crypto.randomInt(100, 9999)).slice(0, 20);
+    if (u.length >= 3 && USERNAME_RE.test(u) && !taken.has(u)) return u;
+  }
+  return 'anime_' + id(4);
+}
+function reelOwners() { // public bot "anime pages" that own the imported reels; created once, each with its own bot followers
+  const have = Object.values(db.users).filter(u => u.isBot && u.reelOwner && !u.suspended).map(u => u.id);
+  if (have.length >= REEL_OWNER_TARGET) return have;
+  ensureBots(1000);
+  const pool = botIds().slice(); const taken = new Set(Object.values(db.users).map(u => u.username));
+  let seq = Math.max(0, ...pool.map(i => db.users[i].n || 0));
+  for (let k = have.length; k < REEL_OWNER_TARGET; k++) {
+    const { g, first, last } = botName();
+    const username = reelOwnerUsername(first, last, taken); taken.add(username);
+    const u = { id: id(), username, name: crypto.randomInt(100) < 35 ? pick(['Anime Edits', 'AMV', 'Otaku Edits', 'Anime World', 'Anime Vibes']) + ' • ' + first : first + ' ' + last,
+      bio: pick(REEL_OWNER_BIOS), isBot: true, reelOwner: true, g, priv: 0, created: now() - crypto.randomInt(60, 1200) * 864e5, n: ++seq };
+    db.users[u.id] = u; have.push(u.id);
+    const nf = logUniform(30, 900), start = crypto.randomInt(pool.length); // a natural spread of followers (other bots)
+    for (let i = 0, added = 0; i < pool.length && added < nf; i++) { const b = pool[(start + i) % pool.length]; (db.follows[b] || (db.follows[b] = [])).push(u.id); added++; }
+  }
+  save(); return have;
+}
+function sniffFile(f) { const fd = fs.openSync(f, 'r'); try { const b = Buffer.alloc(16); const n = fs.readSync(fd, b, 0, 16, 0); return sniff(b.slice(0, n)); } finally { fs.closeSync(fd); } }
+function placeFile(src, dst) { // hardlink (no extra disk); copy only if the two folders are on different disks
+  try { fs.unlinkSync(dst); } catch (e) {}
+  try { fs.linkSync(src, dst); } catch (e) { if (e.code === 'EXDEV' || e.code === 'EPERM') fs.copyFileSync(src, dst); else throw e; }
+}
+let importBusy = false;
+function importReels(limit, by, only) {
+  if (importBusy) throw httpErr(409, 'An import is already running');
+  importBusy = true;
+  try {
+    const r = RI(); limit = Math.max(1, Math.min(parseInt(limit, 10) || 50, 500));
+    const files = inboxFiles(); const pending = files.filter(f => !r.files[f] && (!only || only.has(f)));
+    const out = { imported: 0, failed: [], files: [], pending: 0, total: 0 };
+    if (pending.length) {
+      const man = importManifest(); const owners = reelOwners(); ensureBots(1000);
+      for (const f of pending) {
+        if (out.imported >= limit) break;
+        const src = importPath(f); if (!src) continue;
+        let st; try { st = fs.statSync(src); } catch (e) { continue; }
+        const t = st.isFile() && st.size >= 2048 && st.size <= MAX_REEL_BYTES ? sniffFile(src) : null;
+        if (!t || t.ext !== 'mp4') { r.files[f] = { bad: true, at: now() }; out.failed.push(f); continue; }
+        placeFile(src, path.join(REELS_DIR, f));
+        const pst = importPath(posterName(f)); let poster = false;
+        try { if (pst && fs.statSync(pst).size > 500 && (sniffFile(pst) || {}).ext === 'jpg') { placeFile(pst, path.join(REELS_DIR, posterName(f))); poster = true; } } catch (e) {}
+        const m = man.get(f) || {};
+        const post = { id: id(), uid: pick(owners), media: f, type: 'video', caption: clean(String(m.title || pick(REEL_CAPTIONS)), 300), created: now() - crypto.randomInt(5 * 60e3, 30 * 864e5),
+          likes: [], saves: [], views: [], commentsOff: false, hideLikes: false, reel: { poster, dur: Number(m.duration) || null, src: clean(String(m.source_name || ''), 160) } };
+        db.posts[post.id] = post;
+        const nl = logUniform(20, 800); setBotLikes(post, nl, { noCap: true, exclude: post.uid });
+        post.bonusViews = Math.round(nl * (4 + Math.random() * 16));
+        const nc = crypto.randomInt(0, 6); if (nc) setBotComments(post, nc, { noCap: true, texts: ANIME_COMMENTS, exclude: post.uid });
+        r.files[f] = { pid: post.id, at: now() }; out.imported++; if (out.files.length < 50) out.files.push({ file: f, pid: post.id });
+      }
+    }
+    out.pending = files.filter(f => !r.files[f]).length; out.total = importedCount();
+    r.last = { at: now(), by: by || 'admin', imported: out.imported, failed: out.failed.length };
+    save(); return out;
+  } finally { importBusy = false; }
+}
+function importedCount() { let n = 0; for (const x of Object.values(db.posts)) if (x.reel) n++; return n; }
+function removeImportedReels() { // "Delete all imported reels": posts, their bot likes/comments, files; turns auto-import off so they don't come back
+  const pids = new Set(); for (const x of Object.values(db.posts)) if (x.reel) pids.add(x.id);
+  for (const c of Object.values(db.comments)) if (pids.has(c.pid)) delete db.comments[c.id];
+  for (const n of Object.values(db.notifs)) if (n.pid && pids.has(n.pid)) delete db.notifs[n.id];
+  for (const pid of pids) { const x = db.posts[pid]; fs.rm(path.join(REELS_DIR, x.media), () => {}); fs.rm(path.join(REELS_DIR, posterName(x.media)), () => {}); delete db.posts[pid]; }
+  const r = RI(); r.files = {}; r.auto = false; save(); return pids.size;
+}
+function diskInfo() {
+  try { const s = fs.statfsSync(DATA_DIR); return { freeGB: Math.round(s.bavail * s.bsize / 1e8) / 10, totalGB: Math.round(s.blocks * s.bsize / 1e8) / 10 }; } catch (e) { return null; }
+}
+// auto-import watcher: every `every` minutes imports new files that arrived in IMPORT_DIR (admin can switch it off)
+setInterval(() => {
+  const r = RI(); if (!r.auto || importBusy) return;
+  if (r.lastAuto && now() - r.lastAuto < r.every * 60e3) return;
+  r.lastAuto = now();
+  try { if (inboxFiles().some(f => !r.files[f])) { const o = importReels(r.batch, 'auto'); if (o.imported) console.log('auto-import:', o.imported, 'reels, pending', o.pending); } } catch (e) { console.error('auto-import', e.message); }
+}, 30e3).unref();
 
 function mediaUrl(file) { return file ? '/media/' + file : null; }
 function activeStories(uid) { const t = now(); return Object.values(db.stories).filter(s => s.uid === uid && t - s.created < STORY_TTL).sort((a, b) => a.created - b.created); }
@@ -337,7 +489,7 @@ function postView(p, me) {
   const mine = p.uid === me.id;
   const vis = visibleComments(p, me);
   return {
-    id: p.id, type: p.type, media: mediaUrl(p.media), caption: p.caption, created: p.created,
+    id: p.id, type: p.type, media: postMedia(p), poster: postPoster(p), caption: p.caption, created: p.created,
     user: publicUser(db.users[p.uid], me),
     likes: (p.hideLikes && !mine) ? null : p.likes.length + (p.bonusLikes || 0), likesHidden: !!p.hideLikes,
     likedBy: (p.hideLikes && !mine) ? null : likedByName(p, me),
@@ -360,7 +512,7 @@ function messageView(m, me) {
     const p = db.posts[m.postId]; const owner = p && db.users[p.uid];
     if (!p) o.post = null;
     else if (!canView(me, owner)) o.post = { id: p.id, locked: true, user: publicUser(owner) };
-    else o.post = { id: p.id, media: mediaUrl(p.media), type: p.type, caption: p.caption.slice(0, 80), user: publicUser(owner) };
+    else o.post = { id: p.id, media: postMedia(p), poster: postPoster(p), type: p.type, caption: p.caption.slice(0, 80), user: publicUser(owner) };
   }
   return o;
 }
@@ -799,7 +951,7 @@ route('GET', '/api/users/:username', true, async (req, res, b, me, p) => {
   const isMe = u.id === me.id; const blockedByMe = L(me).blocked.includes(u.id);
   const locked = !canView(me, u);
   const posts = locked ? [] : Object.values(db.posts).filter(x => x.uid === u.id).sort((a, c) => c.created - a.created)
-    .map(x => ({ id: x.id, type: x.type, media: mediaUrl(x.media), likes: (x.hideLikes && !isMe) ? null : x.likes.length + (x.bonusLikes || 0), comments: visibleComments(x, me).length + (x.bonusComments || 0), views: (x.views || []).length + (x.bonusViews || 0) }));
+    .map(x => ({ id: x.id, type: x.type, media: postMedia(x), poster: postPoster(x), likes: (x.hideLikes && !isMe) ? null : x.likes.length + (x.bonusLikes || 0), comments: visibleComments(x, me).length + (x.bonusComments || 0), views: (x.views || []).length + (x.bonusViews || 0) }));
   const user = Object.assign(publicUser(u, me), {
     bio: u.bio || '', website: u.website || '', pronouns: u.pronouns || '',
     posts: Object.values(db.posts).filter(x => x.uid === u.id).length, followers: followerCount(u), following: following(u.id).filter(i => !gone(db.users[i])).length,
@@ -887,8 +1039,9 @@ function listPosts(filter, q, me) {
   return { posts: rows.slice(0, limit).map(x => postView(x, me)), more: rows.length > limit };
 }
 route('GET', '/api/feed', true, async (req, res, b, me, p, q) => {
-  const f = new Set(following(me.id).filter(x => !L(me).mutedPosts.includes(x)).concat(me.id));
-  send(res, 200, listPosts(x => f.has(x.uid), q, me));
+  const muted = L(me).mutedPosts, f = new Set(following(me.id).filter(x => !muted.includes(x)).concat(me.id));
+  // v1.3: imported reels are mixed into everyone's home feed by time, so a brand-new account never sees an empty feed
+  send(res, 200, listPosts(x => f.has(x.uid) || (x.reel && !muted.includes(x.uid)), q, me));
 });
 route('GET', '/api/explore', true, async (req, res, b, me, p, q) => send(res, 200, listPosts(x => x.uid !== me.id && !L(me).mutedPosts.includes(x.uid), q, me)));
 route('GET', '/api/reels', true, async (req, res, b, me, p, q) => send(res, 200, listPosts(x => x.type === 'video', q, me)));
@@ -919,7 +1072,11 @@ route('PUT', '/api/posts/:id', true, async (req, res, b, me, p) => {
 function removePost(x) {
   for (const c of Object.values(db.comments)) if (c.pid === x.id) delete db.comments[c.id];
   for (const n of Object.values(db.notifs)) if (n.pid === x.id) delete db.notifs[n.id];
-  dropMedia(x.media); delete db.posts[x.id]; save();
+  if (x.reel) { // an imported reel: remove its files and remember not to import that file again
+    fs.rm(path.join(REELS_DIR, x.media), () => {}); fs.rm(path.join(REELS_DIR, posterName(x.media)), () => {});
+    RI().files[x.media] = { deleted: true, at: now() };
+  } else dropMedia(x.media);
+  delete db.posts[x.id]; save();
 }
 route('DELETE', '/api/posts/:id', true, async (req, res, b, me, p) => {
   const x = getPost(p.id); if (x.uid !== me.id) throw httpErr(403, 'You can only delete your own post');
@@ -1136,7 +1293,7 @@ route('DELETE', '/api/messages/:id', true, async (req, res, b, me, p) => {
 // ================================================================ notifications
 route('GET', '/api/notifications', true, async (req, res, b, me) => {
   const list = Object.values(db.notifs).filter(n => n.to === me.id && db.users[n.from] && !gone(db.users[n.from]) && !blockedEither(me.id, n.from)).sort((a, c) => c.created - a.created).slice(0, 60)
-    .map(n => { const pst = n.pid && db.posts[n.pid]; return { id: n.id, type: n.type, created: n.created, read: n.read, text: n.text || '', user: Object.assign(publicUser(db.users[n.from], me), { isFollowing: isFollowing(me.id, n.from), requested: (db.requests[n.from] || []).includes(me.id) }), post: pst && canView(me, db.users[pst.uid]) ? { id: pst.id, media: mediaUrl(pst.media), type: pst.type } : null }; });
+    .map(n => { const pst = n.pid && db.posts[n.pid]; return { id: n.id, type: n.type, created: n.created, read: n.read, text: n.text || '', user: Object.assign(publicUser(db.users[n.from], me), { isFollowing: isFollowing(me.id, n.from), requested: (db.requests[n.from] || []).includes(me.id) }), post: pst && canView(me, db.users[pst.uid]) ? { id: pst.id, media: postMedia(pst), poster: postPoster(pst), type: pst.type } : null }; });
   send(res, 200, { notifications: list, followRequests: (db.requests[me.id] || []).filter(i => db.users[i] && !gone(db.users[i])).length });
 });
 route('POST', '/api/notifications/read', true, async (req, res, b, me) => {
@@ -1162,7 +1319,7 @@ adminRoute('GET', '/api/admin/stats', async (req, res) => {
   const t = now();
   send(res, 200, { stats: {
     users: Object.values(db.users).filter(u => !u.isBot).length, bots: botIds().length, activeToday: Object.values(db.users).filter(u => u.lastActive && t - u.lastActive < 864e5).length, onlineNow: streams.size,
-    posts: Object.values(db.posts).filter(p => p.type === 'image').length, reels: Object.values(db.posts).filter(p => p.type === 'video').length,
+    posts: Object.values(db.posts).filter(p => p.type === 'image').length, reels: Object.values(db.posts).filter(p => p.type === 'video' && !p.reel).length, importedReels: importedCount(),
     stories: Object.values(db.stories).filter(s => t - s.created < STORY_TTL).length, comments: Object.values(db.comments).filter(c => !c.bot).length, botComments: Object.values(db.comments).filter(c => c.bot).length,
     messages: Object.values(db.messages).filter(m => !m.deleted).length, likes: Object.values(db.posts).reduce((a, p) => a + p.likes.filter(i => !isBotId(i)).length, 0),
     botFollows: Object.entries(db.follows).reduce((a, [k, v]) => a + (isBotId(k) ? (v || []).length : 0), 0), botLikes: Object.values(db.posts).reduce((a, p) => a + botLikesOf(p).length, 0),
@@ -1199,14 +1356,14 @@ adminRoute('DELETE', '/api/admin/users/:username', async (req, res, b, me, p) =>
   deleteUserData(u); send(res, 200, { ok: true });
 });
 function adminPost(x) {
-  return { id: x.id, type: x.type, media: mediaUrl(x.media), caption: x.caption.slice(0, 120), created: x.created, user: db.users[x.uid] ? db.users[x.uid].username : '?',
+  return { id: x.id, type: x.type, media: postMedia(x), poster: postPoster(x), imported: !!x.reel, caption: x.caption.slice(0, 120), created: x.created, user: db.users[x.uid] ? db.users[x.uid].username : '?',
     realLikes: x.likes.filter(i => !isBotId(i)).length, bonusLikes: botLikesOf(x).length + (x.bonusLikes || 0), botLikes: botLikesOf(x).length,
     realComments: Object.values(db.comments).filter(c => c.pid === x.id && !c.bot).length, bonusComments: botCommentsOf(x).length + (x.bonusComments || 0), botComments: botCommentsOf(x).length,
     realViews: (x.views || []).length, bonusViews: x.bonusViews || 0 };
 }
 adminRoute('GET', '/api/admin/posts', async (req, res, b, me, p, q) => {
   const user = clean(q.get('user'), 30).toLowerCase(); const u = user ? userByName(user) : null;
-  let list = Object.values(db.posts); if (user) list = list.filter(x => u && x.uid === u.id);
+  let list = Object.values(db.posts); if (user) list = list.filter(x => u && x.uid === u.id); else if (q.get('imported') !== '1') list = list.filter(x => !x.reel); // imported reels have their own section
   send(res, 200, { posts: list.sort((a, c) => c.created - a.created).slice(0, 100).map(adminPost) });
 });
 adminRoute('PUT', '/api/admin/posts/:id', async (req, res, b, me, p) => {
@@ -1224,7 +1381,7 @@ adminRoute('PUT', '/api/admin/posts/:id', async (req, res, b, me, p) => {
 adminRoute('POST', '/api/admin/reset-boosts', async (req, res, b) => { // all boosts, or one user's (b.username)
   const u = b.username ? adminTarget(String(b.username)) : null;
   for (const x of Object.values(db.users)) if (!x.isBot && (!u || x.id === u.id)) { delete x.bonusFollowers; if (botFollowersOf(x.id).length) setBotFollowers(x, 0, { noCap: true }); }
-  for (const x of Object.values(db.posts)) if (!u || x.uid === u.id) { delete x.bonusLikes; delete x.bonusComments; delete x.bonusViews; setBotLikes(x, 0, { noCap: true }); setBotComments(x, 0, { noCap: true }); }
+  for (const x of Object.values(db.posts)) if ((!u && !x.reel) || (u && x.uid === u.id)) { delete x.bonusLikes; delete x.bonusComments; delete x.bonusViews; setBotLikes(x, 0, { noCap: true }); setBotComments(x, 0, { noCap: true }); }
   for (const x of Object.values(db.stories)) if (!u || x.uid === u.id) delete x.bonusViews;
   save(); send(res, 200, { ok: true });
 });
@@ -1265,6 +1422,63 @@ adminRoute('DELETE', '/api/admin/comments/:id', async (req, res, b, me, p) => {
   const c = db.comments[p.id]; if (!c) throw httpErr(404, 'Comment not found'); delete db.comments[c.id]; save(); send(res, 200, { ok: true });
 });
 
+// ================================================================ v1.3 admin: bulk reels import
+adminRoute('GET', '/api/admin/reels', async (req, res, b, me, p, q) => {
+  const r = RI(); const files = inboxFiles();
+  const recent = Object.values(db.posts).filter(x => x.reel).sort((a, c) => (r.files[c.media] || {}).at - (r.files[a.media] || {}).at || c.created - a.created).slice(0, 20).map(adminPost);
+  send(res, 200, { imported: importedCount(), inbox: files.length, pending: files.filter(f => !r.files[f]).length, auto: !!r.auto, every: r.every, batch: r.batch,
+    last: r.last || null, busy: importBusy, disk: diskInfo(), mem: { rssMB: Math.round(process.memoryUsage().rss / 1e6), freeMB: Math.round(require('os').freemem() / 1e6), totalMB: Math.round(require('os').totalmem() / 1e6) }, recent,
+    records: q.get('files') ? Object.fromEntries(String(q.get('files')).split(',').slice(0, 50).filter(f => REEL_FILE_RE.test(f)).map(f => [f, r.files[f] || null])) : undefined });
+});
+adminRoute('GET', '/api/admin/reels/inbox', async (req, res) => { // file list with sizes (the uploader skips what is already here)
+  const out = {}; for (const f of fs.readdirSync(IMPORT_DIR)) if (REEL_FILE_RE.test(f) || REEL_POSTER_RE.test(f)) { try { out[f] = fs.statSync(path.join(IMPORT_DIR, f)).size; } catch (e) {} }
+  send(res, 200, { files: out, manifest: importManifest().size });
+});
+adminRoute('POST', '/api/admin/reels/import', async (req, res, b, me, p, q) => { // ?limit=N (max 500); ?only=a.mp4,b.mp4 limits it to named files
+  const only = q.get('only') ? new Set(String(q.get('only')).split(',').filter(f => REEL_FILE_RE.test(f))) : null;
+  send(res, 200, importReels(q.get('limit') || b.limit || 50, 'admin', only));
+});
+adminRoute('DELETE', '/api/admin/reels/inbox/:file', async (req, res, b, me, p) => { // remove a file from the import folder (the reel itself stays if imported)
+  const f = importPath(p.file); if (!f) throw httpErr(400, 'Bad file name');
+  let removed = false; try { fs.unlinkSync(f); removed = true; } catch (e) {}
+  send(res, 200, { removed });
+});
+adminRoute('PUT', '/api/admin/reels/settings', async (req, res, b) => {
+  const r = RI();
+  if (b.auto !== undefined) r.auto = !!b.auto;
+  if (b.every !== undefined) r.every = Math.max(1, Math.min(60, parseInt(b.every, 10) || 3));
+  if (b.batch !== undefined) r.batch = Math.max(10, Math.min(500, parseInt(b.batch, 10) || 150));
+  save(); send(res, 200, { auto: r.auto, every: r.every, batch: r.batch });
+});
+adminRoute('DELETE', '/api/admin/reels', async (req, res) => send(res, 200, { deleted: removeImportedReels(), auto: false }));
+// upload ONE file into IMPORT_DIR (raw body, streamed to disk): PUT /api/admin/reels/inbox/0001.mp4 (+ x-reel-meta: base64 JSON {title, duration, source_name}) or 0001.jpg (poster)
+route('PUT', '/api/admin/reels/inbox/:file', true, async (req, res, b, me, p) => {
+  requireAdmin(req, me);
+  const file = p.file, dst = importPath(file); if (!dst) throw httpErr(400, 'Bad file name');
+  const isVid = REEL_FILE_RE.test(file), max = isVid ? MAX_REEL_BYTES : 2 * 1024 * 1024;
+  const len = parseInt(req.headers['content-length'] || '0', 10);
+  if (!len) throw httpErr(411, 'Content-Length required');
+  if (len > max) throw httpErr(413, 'File too large');
+  let meta = null;
+  if (isVid && req.headers['x-reel-meta']) { try { meta = JSON.parse(Buffer.from(String(req.headers['x-reel-meta']), 'base64').toString('utf8')); } catch (e) { throw httpErr(400, 'Bad x-reel-meta'); } }
+  try { if (fs.statSync(dst).size === len) { req.resume(); if (meta) setManifestEntry(file, meta); return send(res, 200, { ok: true, skipped: true }); } } catch (e) {}
+  const tmp = path.join(IMPORT_DIR, '.' + file + '.' + id(4) + '.part');
+  await new Promise((resolve, reject) => {
+    const ws = fs.createWriteStream(tmp); let n = 0, done = false;
+    const fail = (err) => { if (done) return; done = true; ws.destroy(); fs.rm(tmp, () => {}); reject(err); };
+    req.on('data', c => { n += c.length; if (n > max) { fail(httpErr(413, 'File too large')); req.destroy(); } });
+    req.on('aborted', () => fail(httpErr(400, 'Upload aborted')));
+    req.on('error', fail); ws.on('error', fail);
+    ws.on('finish', () => { if (done) return; if (n !== len) return fail(httpErr(400, 'Upload incomplete')); done = true; resolve(); });
+    req.pipe(ws);
+  });
+  const t = sniffFile(tmp);
+  if (!t || t.ext !== (isVid ? 'mp4' : 'jpg')) { fs.rm(tmp, () => {}); throw httpErr(415, isVid ? 'Not an mp4 video' : 'Not a jpg'); }
+  fs.renameSync(tmp, dst); if (meta) setManifestEntry(file, meta);
+  send(res, 201, { ok: true, bytes: len });
+});
+routes[routes.length - 1].raw = true;
+
 // ================================================================ realtime stream
 route('GET', '/api/stream', true, async (req, res, b, me) => {
   res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', 'Connection': 'keep-alive', 'X-Accel-Buffering': 'no' });
@@ -1290,7 +1504,7 @@ const server = http.createServer(async (req, res) => {
       const me = sessionUser(req);
       if (r.auth && !me) throw httpErr(401, 'Please log in');
       const m = r.re.exec(pathname); const params = {}; r.keys.forEach((k, i) => params[k] = m[i + 1]);
-      const body = req.method === 'GET' ? {} : await readBody(req);
+      const body = (req.method === 'GET' || r.raw) ? {} : await readBody(req);
       await r.fn(req, res, body, me, params, url.searchParams);
       return;
     }
@@ -1312,7 +1526,13 @@ const server = http.createServer(async (req, res) => {
       res.setHeader('Vary', 'Cookie');
       return serveFile(req, res, path.join(MEDIA_DIR, file), MIME[file.split('.').pop()], 'private, max-age=3600');
     }
-    if (pathname === '/healthz') return send(res, 200, { ok: true, app: APP_NAME, version: VERSION, users: Object.values(db.users).filter(u => !u.isBot).length, posts: Object.keys(db.posts).length });
+    if (pathname.startsWith('/reels-media/')) { // imported reels: public (bot pages are public), streamable with HTTP Range, cached by the CDN
+      const file = pathname.slice(13); const nf = () => { res.writeHead(404, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' }); res.end('Not found'); };
+      if (!REEL_FILE_RE.test(file) && !REEL_POSTER_RE.test(file)) return nf();
+      const rec = RI().files[file.replace(/\.jpg$/, '.mp4')]; if (!rec || !rec.pid || !db.posts[rec.pid]) return nf();
+      return serveFile(req, res, path.join(REELS_DIR, file), file.endsWith('.mp4') ? 'video/mp4' : 'image/jpeg', 'public, max-age=31536000, immutable');
+    }
+    if (pathname === '/healthz') return send(res, 200, { ok: true, app: APP_NAME, version: VERSION, users: Object.values(db.users).filter(u => !u.isBot).length, posts: Object.keys(db.posts).length, importedReels: importedCount() });
     // static files
     let f = path.normalize(path.join(PUBLIC_DIR, pathname));
     if (!f.startsWith(PUBLIC_DIR)) { res.writeHead(400); return res.end(); }

@@ -295,7 +295,7 @@ function postCard(p, opts) {
     try { p.saved ? await POST('/api/posts/' + p.id + '/save') : await DEL('/api/posts/' + p.id + '/save'); toast(p.saved ? 'Saved to your collection' : 'Removed from saved'); } catch (e) { toast(e.message); }
   };
   let mediaEl;
-  if (p.type === 'video') { mediaEl = h('video', { src: p.media, muted: true, loop: true, playsinline: true, autoplay: true, preload: 'metadata', class: 'tall' }); mediaEl.muted = true; }
+  if (p.type === 'video') { mediaEl = h('video', { src: p.media, poster: p.poster, muted: true, loop: true, playsinline: true, preload: p.poster ? 'none' : 'metadata', class: 'tall' }); mediaEl.muted = true; onScreenPlay(mediaEl); }
   else mediaEl = h('img', { src: p.media, alt: p.caption.slice(0, 80), loading: 'lazy' });
   const media = h('div', { class: 'media' }, mediaEl);
   let lastTap = 0;
@@ -325,6 +325,13 @@ function postCard(p, opts) {
   return card;
 }
 const viewedPosts = new Set();
+// v1.3: feed videos autoplay (muted) only while at least 60% on screen; nothing is preloaded until it comes near
+const playIO = window.IntersectionObserver ? new IntersectionObserver((ents) => ents.forEach(en => {
+  const v = en.target;
+  if (en.isIntersecting && en.intersectionRatio >= 0.6) { if (v.preload === 'none') v.preload = 'metadata'; v.muted = true; v.play().catch(() => {}); }
+  else if (!v.paused) v.pause();
+}), { threshold: [0, 0.6] }) : null;
+function onScreenPlay(v) { if (playIO) playIO.observe(v); else v.autoplay = true; }
 const viewIO = window.IntersectionObserver ? new IntersectionObserver((ents) => ents.forEach(en => {
   if (!en.isIntersecting || en.intersectionRatio < 0.6) return; const pid = en.target.dataset.pid; viewIO.unobserve(en.target);
   if (!pid || viewedPosts.has(pid)) return; viewedPosts.add(pid); POST('/api/posts/' + pid + '/view').catch(() => {});
@@ -576,7 +583,7 @@ async function suggestions(big) {
 
 // ------------------------------------------------------------------ explore + search
 function gridItem(p) {
-  return h('a', { href: '#/p/' + p.id }, p.type === 'video' ? h('video', { src: p.media + '#t=0.5', muted: true, preload: 'metadata', playsinline: true }) : h('img', { src: p.media, loading: 'lazy', alt: '' }),
+  return h('a', { href: '#/p/' + p.id }, p.type === 'video' ? (p.poster ? h('img', { src: p.poster, loading: 'lazy', alt: '' }) : h('video', { src: p.media + '#t=0.5', muted: true, preload: 'metadata', playsinline: true })) : h('img', { src: p.media, loading: 'lazy', alt: '' }),
     p.type === 'video' ? h('span', { class: 'video-badge', html: ICONS.reels }) : null);
 }
 addRoute(/^#\/explore$/, async () => {
@@ -591,7 +598,18 @@ addRoute(/^#\/explore$/, async () => {
     grid.hidden = true;
     try { const d = await GET('/api/search?q=' + encodeURIComponent(q)); results.replaceChildren(h('div', { class: 'list glass' }, ...(d.users.length ? d.users.map(userRow) : [h('div', { class: 'empty' }, 'No users found')]))); } catch (e) { toast(e.message); }
   }, 220); };
-  GET('/api/explore?limit=30').then(d => grid.replaceChildren(...d.posts.map(gridItem))).catch(e => toast(e.message));
+  // v1.3: paginated grid (thousands of reels) — the next page loads when the bottom comes near
+  let before = 0, busy = false, more = true;
+  const sentinel = h('div', { class: 'more-row' });
+  async function loadMore() {
+    if (busy || !more) return; busy = true; sentinel.replaceChildren(spinner());
+    try { const d = await GET('/api/explore?limit=30' + (before ? '&before=' + before : '')); d.posts.forEach(p => grid.append(gridItem(p))); if (d.posts.length) before = d.posts[d.posts.length - 1].created; more = d.more; }
+    catch (e) { toast(e.message); }
+    sentinel.replaceChildren(); busy = false;
+  }
+  page.querySelector('main').append(sentinel);
+  if ('IntersectionObserver' in window) { const io = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting) && !grid.hidden) loadMore(); }, { rootMargin: '800px' }); io.observe(sentinel); state.cleanup = () => io.disconnect(); }
+  loadMore();
   return page;
 }, { tab: 'explore' });
 function userRow(u) {
@@ -624,17 +642,21 @@ addRoute(/^#\/p\/([a-f0-9]+)$/, async (id) => {
 
 // ------------------------------------------------------------------ reels
 addRoute(/^#\/reels$/, async () => {
+  // v1.3: thousands of reels — pages of 10 load as you scroll; only the reels near the screen keep a video source
+  // (others are unloaded to save memory/data); a reel plays (muted until you tap 🔈) only while it fills the screen
   const wrap = h('div', { class: 'reels' });
-  let d; try { d = await GET('/api/reels?limit=30'); } catch (e) { toast(e.message); return null; }
-  let muted = true;
+  let d; try { d = await GET('/api/reels?limit=10'); } catch (e) { toast(e.message); return null; }
+  let muted = true, before = 0, more = d.more, busy = false;
   if (!d.posts.length) wrap.append(h('div', { class: 'empty', style: 'color:#fff;padding-top:40vh' }, 'No reels yet. Post a video with the + button!'));
-  const vids = [];
-  d.posts.forEach(p => {
-    const v = h('video', { src: p.media, loop: true, playsinline: true, preload: 'metadata' }); v.muted = true; vids.push(v);
+  const reels = [];
+  const setSrc = (r, on) => { const v = r.v; if (on && !v.getAttribute('src')) { v.src = r.p.media; v.preload = 'metadata'; } else if (!on && v.getAttribute('src')) { v.pause(); v.removeAttribute('src'); v.load(); } };
+  function windowAround(i) { reels.forEach((r, k) => setSrc(r, Math.abs(k - i) <= 2)); if (more && i >= reels.length - 4) loadMore(); }
+  function addReel(p) {
+    const v = h('video', { loop: true, playsinline: true, preload: 'none', poster: p.poster }); v.muted = muted;
     const likeIco = h('span', { class: 'gl', html: p.liked ? ICONS.heartF : ICONS.heart, style: p.liked ? 'color:var(--heart)' : '' });
     const likeN = h('span', null, p.likes == null ? '' : fmt(p.likes));
     const reel = h('section', { class: 'reel' }, v,
-      h('button', { class: 'mute', html: ICONS.mute, onclick: (e) => { muted = !muted; vids.forEach(x => x.muted = muted); document.querySelectorAll('.mute').forEach(m => m.innerHTML = muted ? ICONS.mute : ICONS.vol); } }),
+      h('button', { class: 'mute', html: muted ? ICONS.mute : ICONS.vol, onclick: () => { muted = !muted; reels.forEach(x => x.v.muted = muted); document.querySelectorAll('.mute').forEach(m => m.innerHTML = muted ? ICONS.mute : ICONS.vol); } }),
       h('div', { class: 'side' },
         h('button', { onclick: async () => { p.liked = !p.liked; if (p.likes != null) p.likes += p.liked ? 1 : -1; likeIco.innerHTML = p.liked ? ICONS.heartF : ICONS.heart; likeIco.style.color = p.liked ? 'var(--heart)' : ''; likeN.textContent = p.likes == null ? '' : fmt(p.likes); vib(); try { p.liked ? await POST('/api/posts/' + p.id + '/like') : await DEL('/api/posts/' + p.id + '/like'); } catch (e) { toast(e.message); } } }, likeIco, likeN),
         h('button', { onclick: () => openComments(p) }, h('span', { class: 'gl', html: ICONS.comment }), h('span', null, fmt(p.comments))),
@@ -642,11 +664,24 @@ addRoute(/^#\/reels$/, async () => {
       h('div', { class: 'info' }, h('a', { class: 'who', href: '#/u/' + p.user.username }, avatar(p.user), unameEl(p.user)), h('div', { class: 'cap' }, p.caption), p.views ? h('small', { style: 'opacity:.85' }, '▶ ' + fmt(p.views) + ' views') : null));
     let lt = 0; v.addEventListener('click', () => { const t = Date.now(); if (t - lt < 320 && !p.liked) { reel.querySelector('.side button').click(); const b = h('div', { class: 'burst', html: ICONS.heartF }); reel.append(b); setTimeout(() => b.remove(), 950); } else if (v.paused) v.play(); else if (t - lt > 320) setTimeout(() => { if (Date.now() - t > 300 && lt === t) v.paused ? v.play() : v.pause(); }, 330); lt = t; });
     if (!p.mine) reel.dataset.pid = p.id;
-    wrap.append(reel);
-  });
-  const io = new IntersectionObserver((ents) => ents.forEach(en => { const v = en.target.querySelector('video'); if (en.isIntersecting && en.intersectionRatio > 0.6) { v.play().catch(() => {}); const pid = en.target.dataset.pid; if (pid && !viewedPosts.has(pid)) { viewedPosts.add(pid); POST('/api/posts/' + pid + '/view').catch(() => {}); } } else v.pause(); }), { root: wrap, threshold: [0, 0.6, 1] });
-  wrap.querySelectorAll('.reel').forEach(r => io.observe(r));
-  state.cleanup = () => { io.disconnect(); vids.forEach(v => v.pause()); };
+    reel.dataset.i = reels.length; reels.push({ p, v, el: reel });
+    wrap.append(reel); io.observe(reel);
+  }
+  const io = new IntersectionObserver((ents) => ents.forEach(en => {
+    const r = reels[+en.target.dataset.i]; if (!r) return;
+    if (en.isIntersecting && en.intersectionRatio > 0.6) {
+      windowAround(+en.target.dataset.i); r.v.muted = muted; r.v.play().catch(() => {});
+      const pid = en.target.dataset.pid; if (pid && !viewedPosts.has(pid)) { viewedPosts.add(pid); POST('/api/posts/' + pid + '/view').catch(() => {}); }
+    } else r.v.pause();
+  }), { root: wrap, threshold: [0, 0.6, 1] });
+  async function loadMore() {
+    if (busy || !more) return; busy = true;
+    try { const n = await GET('/api/reels?limit=10&before=' + before); n.posts.forEach(addReel); if (n.posts.length) before = n.posts[n.posts.length - 1].created; more = n.more; } catch (e) { toast(e.message); }
+    busy = false;
+  }
+  d.posts.forEach(addReel); if (d.posts.length) before = d.posts[d.posts.length - 1].created;
+  if (reels.length) windowAround(0);
+  state.cleanup = () => { io.disconnect(); reels.forEach(r => { r.v.pause(); r.v.removeAttribute('src'); }); };
   return pageWrap(h('div', { class: 'reels-title' }, 'Reels'), wrap);
 }, { tab: 'reels' });
 
@@ -955,7 +990,7 @@ addRoute(/^#\/about$/, async () => {
   };
   logo.addEventListener('pointerup', up); logo.addEventListener('pointerleave', () => { clearTimeout(holdT); holdT = null; });
   return pageWrap(topbar('About', { back: true }), h('main', { class: 'view' }, h('div', { class: 'about glass' },
-    logo, h('div', { class: 'ver' }, 'Version ' + (state.version || '1.2.0')),
+    logo, h('div', { class: 'ver' }, 'Version ' + (state.version || '1.3.0')),
     h('p', null, 'A liquid glass photo-sharing app: posts, stories that vanish after 24 hours, Close Friends, reels, likes, comments, saves, notifications, private accounts and real-time direct messages.'),
     h('p', null, h('b', { style: 'color:var(--text)' }, 'Educational project by Tech Bro Z, not affiliated with Instagram/Meta.'), ' Built for learning. All names, logos and designs here are original.'),
     h('p', null, 'YouTube: @techbrozdeveloper · Instagram: @tech_bro_z_1'),
@@ -1028,7 +1063,7 @@ addRoute(/^#\/settings$/, async () => {
       linkRow('lock', 'Password and security', 'Change password, login activity, devices', '#/settings/security'),
       linkRow('user', 'Your account', 'Download your data, deactivate or delete', '#/settings/account')),
     section('About',
-      linkRow('menu', 'About Private Insta', 'Version ' + (state.version || '1.2.0'), '#/about')),
+      linkRow('menu', 'About Private Insta', 'Version ' + (state.version || '1.3.0'), '#/about')),
     h('button', { class: 'gbtn block logout', onclick: async () => { await POST('/api/logout').catch(() => {}); state.me = null; state.es && state.es.close(); go('#/login'); } }, 'Log out ' + me.username));
 }, { tab: 'profile' });
 
@@ -1199,7 +1234,7 @@ addRoute(/^#\/admin$/, async () => {
   let tab = 'stats';
   const body = h('div');
   const segEl = h('div', { class: 'seg glass mini admin-seg' });
-  const drawSeg = () => segEl.replaceChildren(...[['stats', 'Stats'], ['users', 'Users'], ['bots', 'Bots 🤖'], ['posts', 'Posts'], ['stories', 'Stories'], ['comments', 'Comments']].map(([k, l]) => h('button', { class: tab === k ? 'on' : '', onclick: () => { tab = k; drawSeg(); draw(); } }, l)));
+  const drawSeg = () => segEl.replaceChildren(...[['stats', 'Stats'], ['users', 'Users'], ['bots', 'Bots 🤖'], ['imports', 'Reels import 🎬'], ['posts', 'Posts'], ['stories', 'Stories'], ['comments', 'Comments']].map(([k, l]) => h('button', { class: tab === k ? 'on' : '', onclick: () => { tab = k; drawSeg(); draw(); } }, l)));
   const fmtN = (n) => Number(n || 0).toLocaleString('en-IN');
   const num = (msg, def) => { const v = prompt(msg, def == null ? '' : String(def)); if (v == null || v.trim() === '') return null; const n = Number(v); if (!Number.isFinite(n)) { toast('Enter a number'); return null; } return n; };
   const act = async (fn, okMsg) => { try { await fn(); if (okMsg) toast(okMsg); draw(); } catch (e) { toast(e.message); if (/locked/.test(e.message)) { const pw = await askPassword('Admin', 'Session expired — confirm your password', 'Unlock'); if (pw) { await POST('/api/admin/unlock', { password: pw }).catch(x => toast(x.message)); draw(); } } } };
@@ -1208,9 +1243,28 @@ addRoute(/^#\/admin$/, async () => {
     try {
       if (tab === 'stats') {
         const { stats } = await GET('/api/admin/stats');
-        const lbl = { users: 'Real users', bots: 'Bot accounts', activeToday: 'Active today', onlineNow: 'Online now', posts: 'Photo posts', reels: 'Reels', stories: 'Live stories', comments: 'Comments', messages: 'Messages', likes: 'Real likes', botFollows: 'Bot follows', botLikes: 'Bot likes', botComments: 'Bot comments', privateAccounts: 'Private accounts', suspended: 'Suspended' };
+        const lbl = { users: 'Real users', bots: 'Bot accounts', importedReels: 'Imported reels', activeToday: 'Active today', onlineNow: 'Online now', posts: 'Photo posts', reels: 'Reels', stories: 'Live stories', comments: 'Comments', messages: 'Messages', likes: 'Real likes', botFollows: 'Bot follows', botLikes: 'Bot likes', botComments: 'Bot comments', privateAccounts: 'Private accounts', suspended: 'Suspended' };
         body.replaceChildren(h('div', { class: 'stat-grid' }, ...Object.entries(lbl).map(([k, l]) => h('div', { class: 'glass stat' }, h('b', null, fmt(stats[k] || 0)), h('small', null, l)))),
           h('button', { class: 'gbtn block dangerb', style: 'margin-top:14px', onclick: () => { if (confirm('Reset ALL boosts (followers, likes, comments, views) to 0?')) act(() => POST('/api/admin/reset-boosts', {}), 'All boosts reset'); } }, 'Reset all boosts to 0'));
+      } else if (tab === 'imports') {
+        const d = await GET('/api/admin/reels');
+        const last = d.last ? 'Last import: ' + fmtN(d.last.imported) + ' reels, ' + ago(d.last.at) + ' (' + (d.last.by === 'auto' ? 'automatic' : 'manual') + ')' : 'No import yet';
+        body.replaceChildren(
+          h('div', { class: 'stat-grid' },
+            h('div', { class: 'glass stat' }, h('b', null, fmtN(d.imported)), h('small', null, 'Imported reels')),
+            h('div', { class: 'glass stat' }, h('b', null, fmtN(d.pending)), h('small', null, 'Waiting to import')),
+            h('div', { class: 'glass stat' }, h('b', null, fmtN(d.inbox)), h('small', null, 'Videos in import folder')),
+            h('div', { class: 'glass stat' }, h('b', null, d.disk ? d.disk.freeGB + ' GB' : '—'), h('small', null, 'Server disk free'))),
+          h('p', { class: 'sub fine' }, last + '. Each reel is posted by a bot anime page, with bot likes and a few bot comments.'),
+          toggleRow('Auto-import', 'Every ' + d.every + ' min, new videos in the import folder are added automatically (' + d.batch + ' at a time)', d.auto, (v) => act(() => PUT('/api/admin/reels/settings', { auto: v }), v ? 'Auto-import ON' : 'Auto-import OFF')),
+          h('button', { class: 'gbtn block primary', style: 'margin-top:12px', disabled: !d.pending, onclick: () => act(async () => { const r = await POST('/api/admin/reels/import?limit=100', {}); toast(fmtN(r.imported) + ' reels imported'); }) }, d.pending ? 'Import next batch (100)' : 'Nothing new to import'),
+          h('button', { class: 'gbtn block dangerb', style: 'margin-top:10px', disabled: !d.imported, onclick: () => { if (confirm('Delete ALL ' + fmtN(d.imported) + ' imported reels? Auto-import will be switched off. Real users\' posts are not touched.')) act(() => DEL('/api/admin/reels'), 'Imported reels deleted'); } }, 'Delete all imported reels'),
+          h('h3', { class: 'sec', style: 'margin-top:18px' }, 'Latest imported'),
+          h('div', { class: 'alist' }, ...(d.recent.length ? d.recent.map(p => h('div', { class: 'glass arow' },
+            h('div', { class: 'srow' }, p.poster ? h('img', { class: 'athumb', src: p.poster, alt: '' }) : h('video', { class: 'athumb', src: p.media + '#t=0.5', muted: true, preload: 'metadata' }),
+              h('div', { class: 'st' }, h('b', null, '@' + p.user), h('small', null, p.caption))),
+            h('div', { class: 'abtns' }, h('a', { class: 'gbtn sm', href: '#/p/' + p.id }, 'Open'),
+              h('button', { class: 'gbtn sm dangerb', onclick: () => { if (confirm('Delete this reel?')) act(() => DEL('/api/admin/posts/' + p.id), 'Reel deleted'); } }, 'Delete')))) : [h('div', { class: 'empty' }, 'No imported reels yet')])));
       } else if (tab === 'users') {
         const q = h('input', { class: 'field', placeholder: 'Search users', autocapitalize: 'none' });
         const list = h('div', { class: 'list glass slist' });

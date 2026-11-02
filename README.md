@@ -1,7 +1,7 @@
-# Private Insta 🔒📸 — Instagram-style clone in Liquid Glass UI (v1.2)
+# Private Insta 🔒📸 — Instagram-style clone in Liquid Glass UI (v1.3)
 
 **Live:** https://instaglass-live.sites.tab.bot  ·  test login: `demo` / `demo1234` (or sign up — it takes 5 seconds)
-**Download v1.2:** [Android APK](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.2/InstaGlass-v1.2.apk) · [Web app ZIP](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.2/instaglass-web-v1.2.zip) · [All releases](https://github.com/nm621532-byte/instagram-clone-techbroz/releases)
+**Download v1.3:** [Android APK](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.3/InstaGlass-v1.3.apk) · [Web app ZIP](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.3/instaglass-web-v1.3.zip) · [All releases](https://github.com/nm621532-byte/instagram-clone-techbroz/releases)
 
 > ⚠️ **Disclaimer:** Educational project by **Tech Bro Z**, not affiliated with Instagram/Meta. Name, logo and design are original.
 > (The repo name stays `instagram-clone-techbroz`; the app was called InstaGlass in v1.0 and is **Private Insta** from v1.1.)
@@ -10,7 +10,17 @@
 <img src="docs/screenshots/v11_02_settings.jpg" width="200"> <img src="docs/screenshots/v11_09_private_profile.jpg" width="200"> <img src="docs/screenshots/v11_03_messages.jpg" width="200"> <img src="docs/screenshots/v11_07_edit_profile.jpg" width="200">
 </p>
 
-## 🆕 v1.2 — Bot boosts: followers list mein naam bhi dikhte hain (Hinglish)
+## 🆕 v1.3 — Anime reels import 🎬 (Hinglish)
+Ab app mein **hazaaron anime edit reels** hain! Reels tab (neeche 🎬 icon) kholo, upar-neeche swipe karo.
+- Har reel ek alag "anime page" (bot account) ki hai, caption ke saath, 20–800 likes aur kuch comments ke saath; pichle ~30 din mein post hui dikhti hain.
+- Home feed, Explore aur Reels sab **pages mein load** hote hain (neeche scroll karo, aur aate jaate hain) — hazaaron reels ke saath bhi fast.
+- Video sirf tab chalti hai jab screen pe dikhe (muted autoplay), baaki ruk jaati hain — data aur battery bachta hai. Har reel ka poster (thumbnail) pehle dikhta hai.
+- Admin panel mein naya **"Reels import 🎬"** tab: kitni reels import hui, inbox mein kitni baaki, disk, **Auto-import on/off**, "Import next batch", "Delete all imported reels", aur latest reels ki list (Open / Delete).
+- Import idempotent hai: wahi file dobara import nahi hoti; delete ki hui reel wapas nahi aati.
+
+![Reels](docs/screenshots/v13_reels.jpg)
+
+## v1.2 — Bot boosts: followers list mein naam bhi dikhte hain (Hinglish)
 
 <p>
 <img src="docs/screenshots/v12_followers.jpg" width="200"> <img src="docs/screenshots/v12_post.jpg" width="200"> <img src="docs/screenshots/v12_comments.jpg" width="200"> <img src="docs/screenshots/v12_admin_bots.jpg" width="200">
@@ -68,6 +78,16 @@ A full, working Instagram-style social app with an original **liquid glass** des
 - 💌 Real-time DMs (Server-Sent Events): text, photos, shared posts, typing, Seen, unsend, **message requests**
 - 🔔 Notifications · 🔎 explore + search · 👤 profiles with website, pronouns and accent colour
 
+### Reels importer (v1.3)
+- **Server side, admin only.** Reel videos are imported from an import folder (`IMPORT_DIR`, default `DATA_DIR/reel-inbox`) that holds `NNNN.mp4` files, optional `NNNN.jpg` posters and a `manifest.json` (`[{file,title,duration,source_name}]`). Files are hard-linked (no copy) into `DATA_DIR/reels/`, the mp4 signature is checked, and each file is imported once (tracked by file name; deleted reels stay deleted).
+- Each reel is owned by one of 240 generated "anime page" bot accounts, backdated over ~30 days, captioned from the manifest, with 20–800 bot likes (log-uniform), 4–20× views and 0–5 bot comments.
+- `/reels-media/<file>` streams with HTTP Range (206) and `Cache-Control: public, max-age=31536000, immutable`; only imported files are served.
+- Admin API (unlocked admin session): `GET /api/admin/reels` (counts, inbox, auto-import, disk, memory), `POST /api/admin/reels/import?limit=N`, `PUT /api/admin/reels/settings` (`auto`, `every` minutes, `batch`), `DELETE /api/admin/reels` (delete all imported), `PUT|DELETE /api/admin/reels/inbox/<file>` (raw upload / remove — used when the server runs on another machine).
+- **Auto-import**: a server watcher imports the next batch every few minutes while auto-import is on (toggle in the admin panel).
+- `tools/push-reels.mjs` — uploader for a remote server: makes a poster per video with ffmpeg, uploads new files with their caption, triggers imports, and keeps watching the folder. `IG_BASE=https://your-site IG_ADMIN_USER=.. IG_ADMIN_PASS=.. node tools/push-reels.mjs ./ready`
+- Feed, Reels and Explore paginate with a `before` cursor and lazy-load; videos autoplay muted only while on screen (IntersectionObserver), with posters and `preload="none"`.
+- Measured: 2,806 reels → feed 18 ms, reels 20 ms, explore 46 ms; ~14 MB JS heap for the database.
+
 ### Bot boosts (v1.2)
 Admin follower/like/comment boosts create **bot accounts** (flag `isBot`, no password, cannot log in, never message or notify anyone) that really follow / like / comment, so the followers list, the "Liked by" list and the comments show names and avatars. Bots are created lazily (the pool grows to the largest boost), have generated SVG avatars (`/bot-avatar/<id>.svg`, drawn faces or initials — no real photos), appear in search like normal accounts, and are listed separately in the admin **Bots** tab. Lowering or resetting a boost removes only bot entries. Existing v1.1 boost numbers are migrated into bot entries on first start (totals unchanged). Caps: 10,000 per action, 30,000 bot followers per account / bot likes per post, 300 bot comments per post. Followers/following/likes lists are paginated (`?offset=&limit=`).
 
@@ -90,7 +110,7 @@ Admin follower/like/comment boosts create **bot accounts** (flag `isBot`, no pas
 - Private accounts, blocks, Close Friends and hidden stories are checked on every read **and** on the media file URLs.
 - DMs are addressed as "me + other user"; DM photos are served only to the two people in that chat.
 - Uploads are checked by their real bytes and size; text is rendered as text + strict CSP; CSRF guard (`X-IG` header); no password hash in any response or data export.
-- `test/smoke.mjs` — **234 checks** (the 70 from v1.0 + privacy, follow requests, Close Friends, block, DM permissions, comments off, hidden words, password change, sessions, export, deactivate, "another user cannot change my settings", admin-only APIs, and v1.2 bot boosts: list fills with named bots, pagination, reset keeps real follows, bot likes/comments, bots cannot log in). Run it before every deploy:
+- `test/smoke.mjs` — **270 checks** (the 70 from v1.0 + privacy, follow requests, Close Friends, block, DM permissions, comments off, hidden words, password change, sessions, export, deactivate, "another user cannot change my settings", admin-only APIs, and v1.2 bot boosts: list fills with named bots, pagination, reset keeps real follows, bot likes/comments, bots cannot log in; v1.3 reels import: 3 sample reels, idempotent re-run, non-admin 403, path traversal blocked, Range 206, posters, feed/reels/explore pagination; `IG_DESTRUCTIVE=1` also tests "delete all imported"). Run it before every deploy:
 ```bash
 node server.js &
 node test/smoke.mjs http://localhost:3000
@@ -116,9 +136,9 @@ release/         # SHA-256 of each signed APK
 .github/         # workflow that attaches the APK + ZIP to each release
 ```
 
-### Download (Release v1.2)
-- Android APK: https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.2/InstaGlass-v1.2.apk (mirror: https://instaglass-live.sites.tab.bot/InstaGlass-v1.2.apk) — installs over v1.1 / v1.0 (same signature, versionCode 3)
-- Web app ZIP: https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.2/instaglass-web-v1.2.zip
+### Download (Release v1.3)
+- Android APK: https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.3/InstaGlass-v1.3.apk (mirror: https://instaglass-live.sites.tab.bot/InstaGlass-v1.3.apk) — installs over v1.2 / v1.1 / v1.0 (same signature, versionCode 4)
+- Web app ZIP: https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.3/instaglass-web-v1.3.zip
 - APK SHA-256: `bdaac43a4ba29688902156bbd4d780156672023cf72ebf99d4342a7c07359e5b`
 - Older: [v1.1](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/tag/v1.1) · [v1.0](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/tag/v1.0)
 

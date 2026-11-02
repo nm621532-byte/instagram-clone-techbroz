@@ -385,3 +385,6 @@ select.field option{color:#111}
 .bot-head{padding:14px 16px;border-radius:18px;margin:0 0 12px;display:flex;flex-direction:column;gap:6px}
 .bot-head b{font-size:20px}
 a.gbtn{text-decoration:none;display:inline-flex;align-items:center}
+/* v1.3 reels import (admin) */
+.athumb{width:46px;height:64px;border-radius:10px;object-fit:cover;flex:none;background:#000}
+.reel video[poster]{background:#000}
