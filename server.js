@@ -2,6 +2,8 @@
 // Not affiliated with Instagram or Meta. Zero dependencies: only Node.js built-ins (Node 18+).
 // v1.1: settings + privacy (private account, follow requests, close friends, block/restrict/mute,
 // message requests, hidden words, comment controls, read receipts, sessions, data export, admin panel).
+// v1.6.4: boost limits raised: followers up to 1,000,000,000 (1000M) per account; likes / views / comments / following / story views up to 1,000,000 (1M).
+//   Bot rows stay capped (30,000 bot followers/likes, 300 bot comments); anything above that is a stored count (bonus*), so 1B followers costs a few bytes, not a billion rows.
 // v1.2: admin boosts create real-looking bot accounts (followers / likes / comments lists fill with names),
 // paginated followers + "liked by" lists, admin Bots tab. Bots live only inside this app and cannot log in.
 'use strict';
@@ -10,7 +12,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const VERSION = '1.6.0';
+const VERSION = '1.6.4';
 const APP_NAME = 'Private Insta';
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, 'data'));
@@ -112,6 +114,18 @@ function migrate() {
     try { if (fs.existsSync(DB_FILE)) fs.copyFileSync(DB_FILE, path.join(DATA_DIR, 'db.backup-v1.4.json')); } catch (e) { console.error('backup', e.message); }
     db.schema = 6; changed = true;
   }
+  if (db.schema < 7) { // v1.6.1: keep a copy of the v1.6 database before reels get HD media swaps / new reel owners
+    try { if (fs.existsSync(DB_FILE)) fs.copyFileSync(DB_FILE, path.join(DATA_DIR, 'db.backup-v1.6.json')); } catch (e) { console.error('backup', e.message); }
+    db.schema = 7; changed = true;
+  }
+  if (db.schema < 8) { // v1.6.2: keep a copy of the database before the anime reels are trimmed to 1500
+    try { if (fs.existsSync(DB_FILE)) fs.copyFileSync(DB_FILE, path.join(DATA_DIR, 'db.backup-pre-anime-trim.json')); } catch (e) { console.error('backup', e.message); }
+    db.schema = 8; changed = true;
+  }
+  if (db.schema < 9) { // v1.6.4: keep a copy of the v1.6.3 database before big (1B / 1M) boosts are stored
+    try { if (fs.existsSync(DB_FILE)) fs.copyFileSync(DB_FILE, path.join(DATA_DIR, 'db.backup-v1.6.3.json')); } catch (e) { console.error('backup', e.message); }
+    db.schema = 9; changed = true;
+  }
   if (!db.vanish || typeof db.vanish !== 'object') { db.vanish = {}; changed = true; } // v1.5: convKey -> { mode, by, since }
   if (changed) save();
 }
@@ -168,6 +182,7 @@ function visibleUser(name, me) {
   return u;
 }
 function followerCount(u) { return followers(u.id).filter(i => !gone(db.users[i])).length + (u.bonusFollowers || 0); }
+function followingCount(u) { return following(u.id).filter(i => !gone(db.users[i])).length + (u.bonusFollowing || 0); }
 
 // ---------------------------------------------------------------- v1.2 bot accounts
 // Admin boosts create follow / like / comment entries from bot accounts so every list shows real-looking names.
@@ -176,6 +191,9 @@ const BOT_ACTION_CAP = 10000;        // most bot followers / likes one admin act
 const BOT_POOL_CAP = 30000;          // most bot followers one user (or bot likes one post) can have = largest pool size
 const BOT_COMMENT_ACTION_CAP = 200;  // bot comments per action
 const BOT_COMMENT_CAP = 300;         // bot comments per post
+// v1.6.4 boost ceilings (admin only). Above the bot caps the rest is a stored number, not rows.
+const MAX_FOLLOWER_BOOST = 1000000000; // 1000 million = 1B followers per account
+const MAX_COUNT_BOOST = 1000000;       // 1 million: likes / views / comments per post, following per account, story views
 // name groups keep first names and surnames believable together (no "Salman Kaur")
 const BOT_NAMES = [
   { w: 62, m: ['Aman', 'Rahul', 'Rohit', 'Ankit', 'Arjun', 'Vikas', 'Sahil', 'Karan', 'Aditya', 'Harsh', 'Nikhil', 'Yash', 'Deepak', 'Mohit', 'Saurabh', 'Abhishek', 'Akash', 'Vivek', 'Gaurav', 'Rajat', 'Varun', 'Kunal', 'Shubham', 'Ayush', 'Ritik', 'Rakesh', 'Manoj', 'Pankaj', 'Sunny', 'Lucky', 'Prince', 'Ravi', 'Ajay', 'Vijay', 'Tarun', 'Naveen', 'Pradeep', 'Anuj', 'Rishabh', 'Dev', 'Kartik', 'Siddharth', 'Aryan', 'Vansh', 'Kabir', 'Ishaan', 'Mayank'],
@@ -312,8 +330,51 @@ function setBotComments(x, n, opts = {}) {
 function removeAllBotsFrom(u) { // "Remove all bots from this user": bot follows + bot likes/comments on their posts; real people untouched
   const out = { followers: botFollowersOf(u.id).length, likes: 0, comments: 0 };
   setBotFollowers(u, 0, { noCap: true });
-  for (const x of Object.values(db.posts)) if (x.uid === u.id) { out.likes += botLikesOf(x).length; out.comments += botCommentsOf(x).length; setBotLikes(x, 0, { noCap: true }); setBotComments(x, 0, { noCap: true }); }
-  delete u.bonusFollowers; save(); return out;
+  for (const x of Object.values(db.posts)) if (x.uid === u.id) { out.likes += botLikesOf(x).length + (x.bonusLikes || 0); out.comments += botCommentsOf(x).length + (x.bonusComments || 0); setBotLikes(x, 0, { noCap: true }); setBotComments(x, 0, { noCap: true }); delete x.bonusLikes; delete x.bonusComments; }
+  out.followers += u.bonusFollowers || 0; delete u.bonusFollowers; save(); return out;
+}
+// --- v1.6.4 big boosts: a boost TOTAL = bot rows (names in the lists, capped) + a stored extra count (no rows).
+// Each admin action adds at most BOT_ACTION_CAP / BOT_COMMENT_ACTION_CAP new bot rows; the rest of the total goes to the stored count,
+// so the shown number is always exactly what the admin typed, and the database never holds more than the bot caps.
+function boostTotal(v, max, what) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) throw httpErr(400, 'Enter a number');
+  const r = Math.round(n);
+  if (r > max) throw httpErr(400, 'Max ' + max.toLocaleString('en-US') + ' ' + what + ' (' + compactNum(max) + ')');
+  return Math.max(0, r);
+}
+function compactNum(n) {
+  const t = (v, s) => (Math.floor(v * 10 + 1e-6) / 10).toFixed(1).replace(/\.0$/, '') + s;
+  return n >= 1e9 ? t(n / 1e9, 'B') : n >= 1e6 ? t(n / 1e6, 'M') : n >= 1e4 ? t(n / 1e3, 'K') : String(n);
+}
+function splitBoost(total, curBots, rowCap, actionCap) { // -> number of bot rows to keep for this total
+  if (total <= curBots) return total;
+  return Math.min(total, rowCap, curBots + actionCap);
+}
+const followerBoostOf = (u) => botFollowersOf(u.id).length + (u.bonusFollowers || 0);
+const likeBoostOf = (x) => botLikesOf(x).length + (x.bonusLikes || 0);
+const commentBoostOf = (x) => botCommentsOf(x).length + (x.bonusComments || 0);
+function setFollowerBoost(u, total) {
+  if (u.isBot) throw httpErr(400, "Bots can't be boosted");
+  total = boostTotal(total, MAX_FOLLOWER_BOOST, 'followers');
+  const bots = splitBoost(total, botFollowersOf(u.id).length, BOT_POOL_CAP, BOT_ACTION_CAP);
+  setBotFollowers(u, bots, { noCap: true }); const have = botFollowersOf(u.id).length;
+  if (total - have > 0) u.bonusFollowers = total - have; else delete u.bonusFollowers;
+  save(); return total;
+}
+function setLikeBoost(x, total) {
+  total = boostTotal(total, MAX_COUNT_BOOST, 'likes');
+  const bots = splitBoost(total, botLikesOf(x).length, BOT_POOL_CAP, BOT_ACTION_CAP);
+  setBotLikes(x, bots, { noCap: true, exclude: x.uid }); const have = botLikesOf(x).length;
+  if (total - have > 0) x.bonusLikes = total - have; else delete x.bonusLikes;
+  save(); return total;
+}
+function setCommentBoost(x, total) {
+  total = boostTotal(total, MAX_COUNT_BOOST, 'comments');
+  const bots = splitBoost(total, botCommentsOf(x).length, BOT_COMMENT_CAP, BOT_COMMENT_ACTION_CAP);
+  setBotComments(x, bots, { noCap: true, exclude: x.uid }); const have = botCommentsOf(x).length;
+  if (total - have > 0) x.bonusComments = total - have; else delete x.bonusComments;
+  save(); return total;
 }
 function migrateBoostsToBots() { // v1.1 stored boosts as plain numbers; v1.2 turns them into bot entries (totals unchanged)
   for (const u of Object.values(db.users)) if (!u.isBot && u.bonusFollowers > 0) {
@@ -338,6 +399,11 @@ const ANIME_COMMENTS = ['Goosebumps aa gaye 🔥', 'Edit OP hai bhai 🔥🔥', 
   'Ye wala scene 🥺', 'Bhai editing skills 🔥', 'Background music 🔥🎶', 'Kitni baar dekh liya 😅', 'Op edit 💥', 'Anime fans yaha aao 🙌'];
 const REEL_OWNER_BIOS = ['Anime edits daily 🔥 | Follow for more', 'Naruto • One Piece • AOT 🧡', 'Otaku hu, edits banata hu ✨', 'Daily anime reels 🎌', 'AMV editor 🎬',
   'Anime is not cartoon 😤', 'Weeb for life 🍥', 'Edits 🎧 | Anime | Vibes', 'Gojo ka fan 😎', 'Anime lover from India 🇮🇳🎌', 'Reels on anime + music 🎶', 'Daily 1 edit 🔥'];
+const STICKMAN_COMMENTS = ['Hahaha 😂😂', 'Stickman OP 🔥', 'Animation mast hai 👏', 'Ye fight scene 🔥🥷', 'Bhai kya bana hai 😍', 'Repeat pe dekh raha hu 🔁', 'Next part kab? 🙏', 'Legend stickman 👑',
+  'Kitni smooth animation hai 😮', 'Mast hai bhai 💯', '😂😂😂', '🔥🔥🔥', 'Ending 😂', 'Kaun kaun repeat pe dekh raha hai? 🙋', 'Creativity level 💯', 'Dil khush ho gaya ❤️', 'Bhai ye kaise banate ho? 🤯', 'Op 💥'];
+const MEME_COMMENTS = ['😂😂😂', 'Hahaha sach mein 🤣', 'Ye toh main hu 😭😂', 'Relatable 💯', 'Bhai ne sahi pakda 😂', 'Tag karo us dost ko 👇😂', 'Pet dard ho gaya hasi se 🤣', 'Meme of the day 🔥', 'Ekdum sahi 😂👌',
+  'Mera wala dost 😂', 'Kya baat hai 😂🔥', 'Hasi nahi ruk rahi 🤣🤣', 'Legend meme 👑', 'Repeat pe dekh raha hu 😂', 'Too real 😭', 'Admin OP 😎', 'Bhai kaha se laate ho 😂', '💯😂'];
+const REEL_COMMENT_SETS = { anime: ANIME_COMMENTS, stickman: STICKMAN_COMMENTS, meme: MEME_COMMENTS };
 const REEL_CAPTIONS = ['Ye scene 🔥 #anime #edit', 'Goosebumps 😱 #anime #animeedit', 'Kya entry thi 🔥 #anime #otaku', 'Bas dekhte raho 😍 #anime #amv'];
 function RI() { // import state lives in the db: { files: { '0001.mp4': {pid, at} | {deleted|bad} }, auto, every, batch, last }
   if (!db.reelImport || typeof db.reelImport !== 'object') db.reelImport = {};
@@ -368,7 +434,12 @@ function importManifest() { // IMPORT_DIR/manifest.json: [{file, title, duration
 }
 function setManifestEntry(file, meta) { // used by the admin upload endpoint; atomic rewrite
   const map = new Map(importManifest());
-  map.set(file, { file, title: clean(String(meta.title || ''), 300), duration: Number(meta.duration) || null, source_name: clean(String(meta.source_name || ''), 160) });
+  const e = { file, title: clean(String(meta.title || ''), 300), duration: Number(meta.duration) || null, source_name: clean(String(meta.source_name || ''), 160) };
+  // v1.6.1: optional fields — replaces (HD swap of an already imported reel's video), owner (a real username), kind (comment style)
+  if (meta.replaces && REEL_FILE_RE.test(String(meta.replaces)) && String(meta.replaces) !== file) e.replaces = String(meta.replaces);
+  if (meta.owner && /^[a-z0-9._]{1,40}$/i.test(String(meta.owner))) e.owner = String(meta.owner).toLowerCase();
+  if (meta.kind && /^[a-z]{1,20}$/.test(String(meta.kind))) e.kind = String(meta.kind);
+  map.set(file, e);
   const mf = path.join(IMPORT_DIR, 'manifest.json'), tmp = mf + '.' + id(4) + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify([...map.values()].sort((a, b) => a.file.localeCompare(b.file)), null, 0)); fs.renameSync(tmp, mf);
   manCache.mtime = -1;
@@ -427,12 +498,30 @@ function importReels(limit, by, only) {
         const pst = importPath(posterName(f)); let poster = false;
         try { if (pst && fs.statSync(pst).size > 500 && (sniffFile(pst) || {}).ext === 'jpg') { placeFile(pst, path.join(REELS_DIR, posterName(f))); poster = true; } } catch (e) {}
         const m = man.get(f) || {};
-        const post = { id: id(), uid: pick(owners), media: f, type: 'video', caption: clean(String(m.title || pick(REEL_CAPTIONS)), 300), created: now() - crypto.randomInt(5 * 60e3, 30 * 864e5),
+        if (m.replaces) { // v1.6.1 HD swap: same reel (id, likes, comments, order), new video file under a new name (the CDN caches old names)
+          const old = r.files[m.replaces], op = old && old.pid && db.posts[old.pid];
+          if (!op || !op.reel || op.media !== m.replaces) { r.files[f] = { bad: true, why: 'replace target not found', at: now() }; out.failed.push(f); continue; }
+          placeFile(src, path.join(REELS_DIR, f));
+          let poster = false;
+          const pst = importPath(posterName(f));
+          try { if (pst && fs.statSync(pst).size > 500 && (sniffFile(pst) || {}).ext === 'jpg') { placeFile(pst, path.join(REELS_DIR, posterName(f))); poster = true; } } catch (e) {}
+          if (!poster && op.reel.poster) { try { placeFile(path.join(REELS_DIR, posterName(m.replaces)), path.join(REELS_DIR, posterName(f))); poster = true; } catch (e) {} }
+          op.media = f; op.reel.poster = poster; if (Number(m.duration)) op.reel.dur = Number(m.duration); op.reel.hd = true;
+          r.files[f] = { pid: op.id, at: now(), replaces: m.replaces };
+          r.files[m.replaces] = { replacedBy: f, at: now() };
+          for (const x of [m.replaces, posterName(m.replaces)]) { fs.rm(path.join(REELS_DIR, x), () => {}); fs.rm(path.join(IMPORT_DIR, x), () => {}); }
+          out.imported++; out.replaced = (out.replaced || 0) + 1; if (out.files.length < 50) out.files.push({ file: f, pid: op.id, replaced: m.replaces });
+          continue;
+        }
+        let uid = pick(owners);
+        if (m.owner) { const ou = Object.values(db.users).find(u => !u.isBot && !u.suspended && u.username === m.owner); if (ou) uid = ou.id; }
+        const ctexts = REEL_COMMENT_SETS[m.kind] || ANIME_COMMENTS;
+        const post = { id: id(), uid, media: f, type: 'video', caption: clean(String(m.title || pick(REEL_CAPTIONS)), 300), created: now() - crypto.randomInt(5 * 60e3, 30 * 864e5),
           likes: [], saves: [], views: [], commentsOff: false, hideLikes: false, reel: { poster, dur: Number(m.duration) || null, src: clean(String(m.source_name || ''), 160) } };
         db.posts[post.id] = post;
         const nl = logUniform(20, 800); setBotLikes(post, nl, { noCap: true, exclude: post.uid });
         post.bonusViews = Math.round(nl * (4 + Math.random() * 16));
-        const nc = crypto.randomInt(0, 6); if (nc) setBotComments(post, nc, { noCap: true, texts: ANIME_COMMENTS, exclude: post.uid });
+        const nc = crypto.randomInt(0, 6); if (nc) setBotComments(post, nc, { noCap: true, texts: ctexts, exclude: post.uid });
         r.files[f] = { pid: post.id, at: now() }; out.imported++; if (out.files.length < 50) out.files.push({ file: f, pid: post.id });
       }
     }
@@ -987,7 +1076,7 @@ route('GET', '/api/users/:username', true, async (req, res, b, me, p) => {
     .map(x => ({ id: x.id, type: x.type, media: postMedia(x), poster: postPoster(x), edit: x.edit || null, vis: x.vis || 'everyone', likes: (x.hideLikes && !isMe) ? null : x.likes.length + (x.bonusLikes || 0), comments: visibleComments(x, me).length + (x.bonusComments || 0), views: (x.views || []).length + (x.bonusViews || 0) }));
   const user = Object.assign(publicUser(u, me), {
     bio: u.bio || '', website: u.website || '', pronouns: u.pronouns || '',
-    posts: Object.values(db.posts).filter(x => x.uid === u.id).length, followers: followerCount(u), following: following(u.id).filter(i => !gone(db.users[i])).length,
+    posts: Object.values(db.posts).filter(x => x.uid === u.id).length, followers: followerCount(u), following: followingCount(u),
     isMe, isFollowing: isFollowing(me.id, u.id), followsYou: isFollowing(u.id, me.id), requested: (db.requests[u.id] || []).includes(me.id),
     locked, blockedByMe, restricted: L(me).restricted.includes(u.id), closeFriend: me.closeFriends.includes(u.id), storyHidden: me.storyHidden.includes(u.id),
     muted: { posts: me.mutedPosts.includes(u.id), stories: me.mutedStories.includes(u.id) },
@@ -1012,7 +1101,7 @@ route('GET', '/api/users/:username/:list', true, async (req, res, b, me, p, q) =
   const { offset, limit } = pageArgs(q, all.length);
   const page = all.slice(offset, offset + limit);
   send(res, 200, { users: page.map(x => Object.assign(publicUser(x, me), { isFollowing: isFollowing(me.id, x.id), followsYou: isFollowing(x.id, me.id), requested: (db.requests[x.id] || []).includes(me.id), isMe: x.id === me.id })),
-    total: all.length, offset, next: offset + limit < all.length ? offset + limit : null });
+    total: all.length, shown: p.list === 'followers' ? followerCount(u) : followingCount(u), offset, next: offset + limit < all.length ? offset + limit : null });
 });
 route('POST', '/api/users/:username/follow', true, async (req, res, b, me, p) => {
   const u = visibleUser(p.username, me);
@@ -1282,7 +1371,7 @@ route('GET', '/api/posts/:id/likes', true, async (req, res, b, me, p, q) => { //
   const all = x.likes.slice().reverse().map(i => db.users[i]).filter(u => u && !gone(u) && !blockedEither(u.id, me.id)).sort((a, c) => (a.isBot ? 1 : 0) - (c.isBot ? 1 : 0));
   const { offset, limit } = pageArgs(q, all.length);
   send(res, 200, { users: all.slice(offset, offset + limit).map(u => Object.assign(publicUser(u, me), { isFollowing: isFollowing(me.id, u.id), requested: (db.requests[u.id] || []).includes(me.id), isMe: u.id === me.id })),
-    total: all.length, offset, next: offset + limit < all.length ? offset + limit : null });
+    total: all.length, shown: likeCount(x), offset, next: offset + limit < all.length ? offset + limit : null });
 });
 route('POST', '/api/posts/:id/like', true, async (req, res, b, me, p) => {
   const x = viewPost(p.id, me); if (!x.likes.includes(me.id)) { x.likes.push(me.id); notify(x.uid, me.id, 'like', { pid: x.id }); }
@@ -1778,7 +1867,8 @@ function adminUser(u) {
   return { id: u.id, username: u.username, name: u.name, avatar: mediaUrl(u.avatar), verified: !!u.verified, admin: !!u.admin, demo: !!u.demo, suspended: !!u.suspended, deactivated: !!u.deactivated,
     created: u.created, lastActive: u.lastActive || null, posts: Object.values(db.posts).filter(p => p.uid === u.id).length,
     realFollowers: followers(u.id).filter(i => !isBotId(i)).length, botFollowers: botFollowersOf(u.id).length, extraFollowers: u.bonusFollowers || 0,
-    bonusFollowers: botFollowersOf(u.id).length + (u.bonusFollowers || 0), shownFollowers: followerCount(u), following: following(u.id).length, private: settingsOf(u).private };
+    bonusFollowers: followerBoostOf(u), shownFollowers: followerCount(u), following: following(u.id).length, bonusFollowing: u.bonusFollowing || 0, shownFollowing: followingCount(u), private: settingsOf(u).private,
+    maxFollowers: MAX_FOLLOWER_BOOST, maxCount: MAX_COUNT_BOOST };
 }
 adminRoute('GET', '/api/admin/users', async (req, res, b, me, p, q) => {
   const s = clean(q.get('q'), 30).toLowerCase();
@@ -1786,13 +1876,15 @@ adminRoute('GET', '/api/admin/users', async (req, res, b, me, p, q) => {
   send(res, 200, { users: list.sort((a, c) => c.created - a.created).slice(0, 200).map(adminUser) });
 });
 const adminTarget = (name) => { const u = userByName(name); if (!u) throw httpErr(404, 'User not found'); return u; };
-const boostNum = (v, cur) => { const n = Number(v); if (!Number.isFinite(n) || Math.abs(n) > 1e8) throw httpErr(400, 'Enter a number'); return Math.max(0, Math.round(n)); };
+const addNum = (v) => { const n = Number(v); if (!Number.isFinite(n) || Math.abs(n) > MAX_FOLLOWER_BOOST * 2) throw httpErr(400, 'Enter a number'); return Math.round(n); };
 adminRoute('PUT', '/api/admin/users/:username', async (req, res, b, me, p) => {
   const u = adminTarget(p.username);
   if (b.verified !== undefined) u.verified = !!b.verified;
   // v1.2: follower boosts are real follow edges from bot accounts (they show in the followers list); only bot edges are ever removed
-  if (b.bonusFollowers !== undefined) { const n = boostNum(b.bonusFollowers); delete u.bonusFollowers; setBotFollowers(u, n); }                 // set total boost
-  if (b.addFollowers !== undefined) { const add = Number(b.addFollowers); if (!Number.isFinite(add)) throw httpErr(400, 'Enter a number'); setBotFollowers(u, boostNum(botFollowersOf(u.id).length + add)); } // add (negative = remove bots)
+  // v1.6.4: total boost up to 1,000,000,000 = bot rows (max 30,000, names in the list) + stored extra count
+  if (b.bonusFollowers !== undefined) setFollowerBoost(u, b.bonusFollowers);                                   // set total boost
+  if (b.addFollowers !== undefined) setFollowerBoost(u, Math.max(0, followerBoostOf(u) + addNum(b.addFollowers))); // add (negative = remove)
+  if (b.bonusFollowing !== undefined) { if (u.isBot) throw httpErr(400, "Bots can't be boosted"); const n = boostTotal(b.bonusFollowing, MAX_COUNT_BOOST, 'following'); if (n) u.bonusFollowing = n; else delete u.bonusFollowing; }
   if (b.suspended !== undefined) {
     if (u.admin && b.suspended) throw httpErr(400, 'An admin cannot be suspended');
     u.suspended = !!b.suspended; if (u.suspended) { killSessions(u.id); closeStreams(u.id); }
@@ -1807,7 +1899,7 @@ function adminPost(x) {
   return { id: x.id, type: x.type, media: postMedia(x), poster: postPoster(x), imported: !!x.reel, caption: x.caption.slice(0, 120), created: x.created, user: db.users[x.uid] ? db.users[x.uid].username : '?',
     realLikes: x.likes.filter(i => !isBotId(i)).length, bonusLikes: botLikesOf(x).length + (x.bonusLikes || 0), botLikes: botLikesOf(x).length,
     realComments: Object.values(db.comments).filter(c => c.pid === x.id && !c.bot).length, bonusComments: botCommentsOf(x).length + (x.bonusComments || 0), botComments: botCommentsOf(x).length,
-    realViews: (x.views || []).length, bonusViews: x.bonusViews || 0 };
+    realViews: (x.views || []).length, bonusViews: x.bonusViews || 0, maxCount: MAX_COUNT_BOOST };
 }
 adminRoute('GET', '/api/admin/posts', async (req, res, b, me, p, q) => {
   const user = clean(q.get('user'), 30).toLowerCase(); const u = user ? userByName(user) : null;
@@ -1816,19 +1908,19 @@ adminRoute('GET', '/api/admin/posts', async (req, res, b, me, p, q) => {
 });
 adminRoute('PUT', '/api/admin/posts/:id', async (req, res, b, me, p) => {
   const x = getPost(p.id);
-  const num = (v) => { const n = Number(v); if (!Number.isFinite(n)) throw httpErr(400, 'Enter a number'); return n; };
-  // likes + comments = bot entries (names show in "Liked by" / comments); views stay a number
-  if (b.bonusLikes !== undefined) { delete x.bonusLikes; setBotLikes(x, boostNum(b.bonusLikes)); }
-  if (b.addLikes !== undefined) setBotLikes(x, boostNum(botLikesOf(x).length + num(b.addLikes)));
-  if (b.bonusComments !== undefined) { delete x.bonusComments; setBotComments(x, boostNum(b.bonusComments)); }
-  if (b.addComments !== undefined) setBotComments(x, boostNum(botCommentsOf(x).length + num(b.addComments)));
-  if (b.bonusViews !== undefined) x.bonusViews = boostNum(b.bonusViews);
-  if (b.addViews !== undefined) x.bonusViews = boostNum((x.bonusViews || 0) + num(b.addViews));
+  // v1.6.4: each total up to 1,000,000. likes = bot rows (max 30,000, names in "Liked by") + stored extra; comments = bot comments (max 300) + stored extra; views = a number
+  if (b.bonusLikes !== undefined) setLikeBoost(x, b.bonusLikes);
+  if (b.addLikes !== undefined) setLikeBoost(x, Math.max(0, likeBoostOf(x) + addNum(b.addLikes)));
+  if (b.bonusComments !== undefined) setCommentBoost(x, b.bonusComments);
+  if (b.addComments !== undefined) setCommentBoost(x, Math.max(0, commentBoostOf(x) + addNum(b.addComments)));
+  if (b.bonusViews !== undefined) x.bonusViews = boostTotal(b.bonusViews, MAX_COUNT_BOOST, 'views');
+  if (b.addViews !== undefined) x.bonusViews = boostTotal(Math.max(0, (x.bonusViews || 0) + addNum(b.addViews)), MAX_COUNT_BOOST, 'views');
+  if (!x.bonusViews) delete x.bonusViews;
   save(); send(res, 200, { post: adminPost(x) });
 });
 adminRoute('POST', '/api/admin/reset-boosts', async (req, res, b) => { // all boosts, or one user's (b.username)
   const u = b.username ? adminTarget(String(b.username)) : null;
-  for (const x of Object.values(db.users)) if (!x.isBot && (!u || x.id === u.id)) { delete x.bonusFollowers; if (botFollowersOf(x.id).length) setBotFollowers(x, 0, { noCap: true }); }
+  for (const x of Object.values(db.users)) if (!x.isBot && (!u || x.id === u.id)) { delete x.bonusFollowers; delete x.bonusFollowing; if (botFollowersOf(x.id).length) setBotFollowers(x, 0, { noCap: true }); }
   for (const x of Object.values(db.posts)) if ((!u && !x.reel) || (u && x.uid === u.id)) { delete x.bonusLikes; delete x.bonusComments; delete x.bonusViews; setBotLikes(x, 0, { noCap: true }); setBotComments(x, 0, { noCap: true }); }
   for (const x of Object.values(db.stories)) if (!u || x.uid === u.id) delete x.bonusViews;
   save(); send(res, 200, { ok: true });
@@ -1837,13 +1929,14 @@ adminRoute('GET', '/api/admin/bots', async (req, res, b, me, p, q) => { // Bots 
   const boosted = [];
   for (const u of Object.values(db.users)) {
     if (u.isBot) continue;
-    const f = botFollowersOf(u.id).length; let l = 0, c = 0;
-    for (const x of Object.values(db.posts)) if (x.uid === u.id) { l += botLikesOf(x).length; c += botCommentsOf(x).length; }
-    if (f || l || c) boosted.push({ username: u.username, name: u.name, avatar: mediaUrl(u.avatar), verified: !!u.verified, botFollowers: f, botLikes: l, botComments: c, realFollowers: followers(u.id).filter(i => !isBotId(i)).length });
+    const f = botFollowersOf(u.id).length; let l = 0, c = 0, xl = 0, xc = 0;
+    for (const x of Object.values(db.posts)) if (x.uid === u.id) { l += botLikesOf(x).length; c += botCommentsOf(x).length; xl += x.bonusLikes || 0; xc += x.bonusComments || 0; }
+    if (f || l || c || u.bonusFollowers || xl || xc) boosted.push({ username: u.username, name: u.name, avatar: mediaUrl(u.avatar), verified: !!u.verified, botFollowers: f, botLikes: l, botComments: c,
+      extraFollowers: u.bonusFollowers || 0, extraLikes: xl, extraComments: xc, totalFollowers: f + (u.bonusFollowers || 0), realFollowers: followers(u.id).filter(i => !isBotId(i)).length });
   }
   const ids = botIds(); const { offset, limit } = pageArgs(q, ids.length);
   const list = ids.slice().reverse().slice(offset, offset + Math.min(limit, 50)).map(i => db.users[i]).map(u => ({ username: u.username, name: u.name, avatar: botAvatarUrl(u), bio: u.bio, private: !!u.priv, follows: (db.follows[u.id] || []).length }));
-  send(res, 200, { total: ids.length, poolCap: BOT_POOL_CAP, actionCap: BOT_ACTION_CAP, boosted: boosted.sort((a, c) => c.botFollowers - a.botFollowers), bots: list, offset, next: offset + 50 < ids.length ? offset + 50 : null });
+  send(res, 200, { total: ids.length, poolCap: BOT_POOL_CAP, actionCap: BOT_ACTION_CAP, maxFollowers: MAX_FOLLOWER_BOOST, maxCount: MAX_COUNT_BOOST, boosted: boosted.sort((a, c) => c.totalFollowers - a.totalFollowers), bots: list, offset, next: offset + 50 < ids.length ? offset + 50 : null });
 });
 adminRoute('DELETE', '/api/admin/users/:username/bots', async (req, res, b, me, p) => {
   const u = adminTarget(p.username); if (u.isBot) throw httpErr(400, 'That is a bot');
@@ -1856,8 +1949,8 @@ adminRoute('GET', '/api/admin/stories', async (req, res) => {
 });
 adminRoute('PUT', '/api/admin/stories/:id', async (req, res, b, me, p) => {
   const s = db.stories[p.id]; if (!s) throw httpErr(404, 'Story not found');
-  if (b.bonusViews !== undefined) s.bonusViews = boostNum(b.bonusViews);
-  if (b.addViews !== undefined) s.bonusViews = boostNum((s.bonusViews || 0) + Number(b.addViews));
+  if (b.bonusViews !== undefined) s.bonusViews = boostTotal(b.bonusViews, MAX_COUNT_BOOST, 'story views');
+  if (b.addViews !== undefined) s.bonusViews = boostTotal(Math.max(0, (s.bonusViews || 0) + addNum(b.addViews)), MAX_COUNT_BOOST, 'story views');
   save(); send(res, 200, { ok: true, bonusViews: s.bonusViews || 0 });
 });
 adminRoute('DELETE', '/api/admin/posts/:id', async (req, res, b, me, p) => { removePost(getPost(p.id)); send(res, 200, { ok: true }); });
@@ -1885,6 +1978,22 @@ adminRoute('GET', '/api/admin/reels/inbox', async (req, res) => { // file list w
 adminRoute('POST', '/api/admin/reels/import', async (req, res, b, me, p, q) => { // ?limit=N (max 500); ?only=a.mp4,b.mp4 limits it to named files
   const only = q.get('only') ? new Set(String(q.get('only')).split(',').filter(f => REEL_FILE_RE.test(f))) : null;
   send(res, 200, importReels(q.get('limit') || b.limit || 50, 'admin', only));
+});
+// v1.6.2 bulk delete of imported reels by their current file name: posts, bot likes/comments, notifications, served files AND the import-folder copies (frees disk)
+adminRoute('POST', '/api/admin/reels/delete', async (req, res, b) => {
+  const files = Array.isArray(b.files) ? b.files.map(String).filter(f => REEL_FILE_RE.test(f)).slice(0, 2000) : [];
+  if (!files.length) throw httpErr(400, 'files: a list of reel file names');
+  const r = RI(); const pids = new Set(); const out = { deleted: 0, notFound: [] };
+  for (const f of files) { const rec = r.files[f]; const x = rec && rec.pid && db.posts[rec.pid]; if (x && x.reel && x.media === f) pids.add(x.id); else out.notFound.push(f); }
+  for (const c of Object.values(db.comments)) if (pids.has(c.pid)) delete db.comments[c.id];
+  for (const n of Object.values(db.notifs)) if (n.pid && pids.has(n.pid)) delete db.notifs[n.id];
+  for (const pid of pids) {
+    const x = db.posts[pid];
+    for (const name of [x.media, posterName(x.media)]) { fs.rm(path.join(REELS_DIR, name), () => {}); fs.rm(path.join(IMPORT_DIR, name), () => {}); }
+    r.files[x.media] = { deleted: true, at: now(), by: 'trim' };
+    delete db.posts[pid]; out.deleted++;
+  }
+  save(); out.total = importedCount(); out.disk = diskInfo(); send(res, 200, out);
 });
 adminRoute('DELETE', '/api/admin/reels/inbox/:file', async (req, res, b, me, p) => { // remove a file from the import folder (the reel itself stays if imported)
   const f = importPath(p.file); if (!f) throw httpErr(400, 'Bad file name');

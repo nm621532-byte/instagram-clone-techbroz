@@ -81,7 +81,12 @@ function ago(t) {
   const hh = Math.floor(m / 60); if (hh < 24) return hh + 'h'; const d = Math.floor(hh / 24); if (d < 7) return d + 'd';
   return new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
-const fmt = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1e4 ? (n / 1e3).toFixed(1) + 'K' : String(n);
+// v1.6.4: compact counts like Instagram: 9,999 · 12.5K · 999.9K · 1M · 999.9M · 1B (rounded down, never shows more than the real number)
+const fmt = (n) => {
+  n = Math.round(Number(n) || 0); const a = Math.abs(n);
+  const t = (v, s) => (Math.floor(v * 10 + 1e-6) / 10).toFixed(1).replace(/\.0$/, '') + s;
+  return a >= 1e9 ? t(n / 1e9, 'B') : a >= 1e6 ? t(n / 1e6, 'M') : a >= 1e4 ? t(n / 1e3, 'K') : n.toLocaleString('en-US');
+};
 let toastT;
 function toast(msg) { const t = document.getElementById('toast'); t.textContent = msg; t.hidden = false; t.style.animation = 'none'; t.offsetHeight; t.style.animation = ''; clearTimeout(toastT); toastT = setTimeout(() => t.hidden = true, 2400); }
 async function api(method, url, body) {
@@ -290,7 +295,7 @@ function pagedList(url, box, emptyMsg, onTotal) {
     if (next === 0) box.replaceChildren(spinner()); else more.replaceChildren(spinner());
     try {
       const d = await GET(url + (url.includes('?') ? '&' : '?') + 'offset=' + next + '&limit=40');
-      if (next === 0) { box.replaceChildren(); if (onTotal) onTotal(d.total != null ? d.total : d.users.length); }
+      if (next === 0) { box.replaceChildren(); if (onTotal) onTotal(d.shown != null ? d.shown : d.total != null ? d.total : d.users.length); }
       if (next === 0 && !d.users.length) { box.append(h('div', { class: 'empty' }, emptyMsg)); next = null; return; }
       more.remove(); box.append(...d.users.map(userRow));
       next = d.next == null ? null : d.next;
@@ -351,7 +356,7 @@ function postCard(p, opts) {
   const saveBtn = h('button', { class: 'icon-btn', 'aria-label': 'Save', html: p.saved ? ICONS.saveF : ICONS.save });
   const likeTxt = () => {
     if (p.likes == null) return [p.liked ? 'Liked by you and others' : 'Liked by others'];
-    const others = (n) => n.toLocaleString('en-IN') + (n === 1 ? ' other' : ' others');
+    const others = (n) => (n >= 1e4 ? fmt(n) : n.toLocaleString('en-US')) + (n === 1 ? ' other' : ' others');
     if (p.liked && p.likes > 1) return ['Liked by ', h('b', null, 'you'), ' and ', h('b', null, others(p.likes - 1))];
     if (!p.liked && p.likedBy && p.likes > 1) return ['Liked by ', h('b', null, p.likedBy), ' and ', h('b', null, others(p.likes - 1))];
     return [fmt(p.likes) + (p.likes === 1 ? ' like' : ' likes')];
@@ -398,7 +403,7 @@ function postCard(p, opts) {
       h('button', { class: 'icon-btn', 'aria-label': 'Share', html: ICONS.send, onclick: () => openShare(p) }),
       h('span', { class: 'sp' }), saveBtn),
     h('div', { class: 'post-body' }, likesEl, p.views ? h('div', { class: 'views' }, h('span', { style: 'display:inline-flex;width:15px', html: ICONS.eye }), ' ' + fmt(p.views) + (p.views === 1 ? ' view' : ' views')) : null, capEl, tagsEl, ...previewEls,
-      p.comments > (p.preview || []).length ? h('button', { class: 'more-c', onclick: () => openComments(p, card) }, 'View all ' + p.comments + ' comments') : null,
+      p.comments > (p.preview || []).length ? h('button', { class: 'more-c', onclick: () => openComments(p, card) }, 'View all ' + fmt(p.comments) + ' comments') : null,
       h('div', { class: 'time' }, ago(p.created) + ' ago')));
   watchView(p, card);
   return card;
@@ -586,7 +591,7 @@ async function openStories(queue) {
     reply.onfocus = () => paused = true; reply.onblur = () => paused = false;
     const bottom = isMe ? h('div', { class: 'sv-bottom' }, h('button', { class: 'viewers', onclick: () => {
       const v = d.stories[i].viewers || []; paused = true;
-      const s = sheet('Seen by ' + (d.stories[i].views != null ? d.stories[i].views : v.length), h('div', { class: 'scroll' }, ...(v.length ? v.map(u => h('a', { class: 'row', href: '#/u/' + u.username }, avatar(u), h('div', { class: 'meta' }, h('b', null, u.username)))) : [h('div', { class: 'empty' }, 'No views yet')])));
+      const s = sheet('Seen by ' + fmt(d.stories[i].views != null ? d.stories[i].views : v.length), h('div', { class: 'scroll' }, ...(v.length ? v.map(u => h('a', { class: 'row', href: '#/u/' + u.username }, avatar(u), h('div', { class: 'meta' }, h('b', null, u.username)))) : [h('div', { class: 'empty' }, 'No views yet')])));
       s.ov.style.zIndex = 70; s.ov.addEventListener('click', () => setTimeout(() => { if (!document.body.contains(s.ov)) paused = false; }, 300));
     } }, h('span', { style: 'display:inline-flex', html: ICONS.eye }), 'Activity'))
       : !d.canReply ? h('div', { class: 'sv-bottom' }, h('small', { style: 'color:#fff;opacity:.75;margin:auto' }, 'Replies are turned off'))
@@ -761,8 +766,9 @@ addRoute(/^#\/reels(?:\/([a-f0-9]+))?$/, async (startId) => {
   let muted = true, offset = d.next || d.posts.length, more = d.more, busy = false;
   if (!d.posts.length) wrap.append(h('div', { class: 'empty', style: 'color:#fff;padding-top:40vh' }, 'No reels yet. Post a video with the + button!'));
   const reels = [];
-  const setSrc = (r, on) => { const v = r.v; if (on && !v.getAttribute('src')) { v.src = r.p.media; v.preload = 'metadata'; } else if (!on && v.getAttribute('src')) { v.pause(); v.removeAttribute('src'); v.load(); if (v._music) v._music.pause(); } };
-  function windowAround(i) { reels.forEach((r, k) => setSrc(r, Math.abs(k - i) <= 2)); if (more && i >= reels.length - 4) loadMore(); }
+  // v1.6.1: the reel on screen and the next one buffer fully (preload auto) so a swipe starts at once; the others only fetch metadata
+  const setSrc = (r, on, eager) => { const v = r.v; if (on && !v.getAttribute('src')) { v.preload = eager ? 'auto' : 'metadata'; v.src = r.p.media; } else if (on && eager && v.preload !== 'auto') { v.preload = 'auto'; } else if (!on && v.getAttribute('src')) { v.pause(); v.removeAttribute('src'); v.load(); if (v._music) v._music.pause(); } };
+  function windowAround(i) { reels.forEach((r, k) => setSrc(r, Math.abs(k - i) <= 2, k === i || k === i + 1)); if (more && i >= reels.length - 4) loadMore(); }
   function addReel(p) {
     if (have.has(p.id)) return; have.add(p.id); // never the same reel twice in one session
     const v = h('video', { loop: true, playsinline: true, preload: 'none', poster: p.poster }); setSound(v, !muted);
@@ -1147,7 +1153,7 @@ function profileMenu(u) {
 addRoute(/^#\/u\/([a-z0-9._]+)\/(followers|following)$/, async (username, list) => {
   const box = h('div', { class: 'list glass' }, spinner());
   const count = h('p', { class: 'sub fine list-count' }, '');
-  pagedList('/api/users/' + username + '/' + list, box, 'Nobody here yet', (n) => { count.textContent = n.toLocaleString('en-IN') + ' ' + (list === 'followers' ? (n === 1 ? 'follower' : 'followers') : 'following'); });
+  pagedList('/api/users/' + username + '/' + list, box, 'Nobody here yet', (n) => { count.textContent = fmt(n) + ' ' + (list === 'followers' ? (n === 1 ? 'follower' : 'followers') : 'following'); });
   return pageWrap(topbar(list === 'followers' ? 'Followers' : 'Following', { back: true }), h('main', { class: 'view' }, h('div', { class: 'uname-head' }, '@' + username), count, box));
 }, { tab: 'profile' });
 const ACCENT_CHOICES = ['', '#a78bfa', '#22d3ee', '#f472b6', '#34d399', '#fbbf24', '#fb7185', '#60a5fa', '#f97316'];
@@ -1925,8 +1931,15 @@ addRoute(/^#\/admin$/, async () => {
   const body = h('div');
   const segEl = h('div', { class: 'seg glass mini admin-seg' });
   const drawSeg = () => segEl.replaceChildren(...[['stats', 'Stats'], ['users', 'Users'], ['bots', 'Bots 🤖'], ['imports', 'Reels import 🎬'], ['posts', 'Posts'], ['stories', 'Stories'], ['comments', 'Comments']].map(([k, l]) => h('button', { class: tab === k ? 'on' : '', onclick: () => { tab = k; drawSeg(); draw(); } }, l)));
-  const fmtN = (n) => Number(n || 0).toLocaleString('en-IN');
-  const num = (msg, def) => { const v = prompt(msg, def == null ? '' : String(def)); if (v == null || v.trim() === '') return null; const n = Number(v); if (!Number.isFinite(n)) { toast('Enter a number'); return null; } return n; };
+  const fmtN = (n) => Number(n || 0).toLocaleString('en-US');
+  const big = (n) => Number(n || 0) >= 1e4 ? fmt(n) : fmtN(n);   // v1.6.4: 1B / 999.9M / 1M / 12.5K
+  // v1.6.4: number boxes take plain numbers or shortcuts: 1000M, 1B, 1M, 500K, 2.5L (lakh), 10Cr (crore), 1,00,000
+  const parseCount = (v) => {
+    const m = String(v).trim().toLowerCase().replace(/[,_\s]/g, '').match(/^(-?\d+(?:\.\d+)?)(k|m|b|l|lakh|lac|cr|crore)?$/);
+    if (!m) return NaN; const mul = { k: 1e3, m: 1e6, b: 1e9, l: 1e5, lakh: 1e5, lac: 1e5, cr: 1e7, crore: 1e7 }[m[2]] || 1;
+    return Math.round(Number(m[1]) * mul);
+  };
+  const num = (msg, def) => { const v = prompt(msg + '\nTip: you can type 1000M, 1B, 1M or 500K.', def == null ? '' : String(def)); if (v == null || v.trim() === '') return null; const n = parseCount(v); if (!Number.isFinite(n)) { toast('Enter a number like 1000000 or 1M'); return null; } return n; };
   const act = async (fn, okMsg) => { try { await fn(); if (okMsg) toast(okMsg); draw(); } catch (e) { toast(e.message); if (/locked/.test(e.message)) { const pw = await askPassword('Admin', 'Session expired — confirm your password', 'Unlock'); if (pw) { await POST('/api/admin/unlock', { password: pw }).catch(x => toast(x.message)); draw(); } } } };
   async function draw() {
     body.replaceChildren(spinner());
@@ -1962,11 +1975,13 @@ addRoute(/^#\/admin$/, async () => {
           const d = await GET('/api/admin/users?q=' + encodeURIComponent(q.value.trim()));
           list.replaceChildren(...d.users.map(u => h('div', { class: 'arow' },
             h('div', { class: 'srow' }, avatar(u), h('div', { class: 'st' }, h('b', null, u.username, u.verified ? h('span', { style: 'display:inline-flex', html: ICONS.verified }) : null, u.admin ? ' 👑' : '', u.suspended ? ' ⛔' : '', u.private ? ' 🔒' : ''),
-              h('small', null, u.posts + ' posts · ' + fmtN(u.realFollowers) + ' real + ' + fmtN(u.botFollowers) + ' bots' + (u.extraFollowers ? ' + ' + fmtN(u.extraFollowers) : '') + ' = ' + fmtN(u.shownFollowers) + ' followers'))),
+              h('small', null, u.posts + ' posts · ' + fmtN(u.realFollowers) + ' real + ' + fmtN(u.botFollowers) + ' bots' + (u.extraFollowers ? ' + ' + fmtN(u.extraFollowers) + ' boost' : '') + ' = ' + big(u.shownFollowers) + ' followers · ' + big(u.shownFollowing != null ? u.shownFollowing : u.following) + ' following'))),
             h('div', { class: 'abtns' },
               h('button', { class: 'gbtn sm', onclick: () => act(() => PUT('/api/admin/users/' + u.username, { verified: !u.verified }), u.verified ? 'Badge removed' : 'Blue badge given ✔') }, u.verified ? 'Remove badge' : 'Verify ✔'),
-              h('button', { class: 'gbtn sm primary', onclick: () => { const n = num('Add how many bot followers to ' + u.username + '? (max 10,000 at a time)', 100); if (n != null) act(() => PUT('/api/admin/users/' + u.username, { addFollowers: n }), fmtN(n) + ' followers added (with names)'); } }, '+ Followers'),
-              h('button', { class: 'gbtn sm', onclick: () => { const n = num('Set bot followers for ' + u.username + ' (0 = remove all bots; real followers stay)', u.bonusFollowers); if (n != null) act(() => PUT('/api/admin/users/' + u.username, { bonusFollowers: n }), 'Boost set to ' + fmtN(n)); } }, 'Set boost'),
+              h('button', { class: 'gbtn sm primary', onclick: () => { const n = num('Add how many followers to ' + u.username + '? (total boost max 1000M = 1,000,000,000)', 100); if (n != null) act(() => PUT('/api/admin/users/' + u.username, { addFollowers: n }), big(n) + ' followers added'); } }, '+ Followers'),
+              h('button', { class: 'gbtn sm', onclick: () => { const n = num('Set total boosted followers for ' + u.username + ' (max 1000M = 1,000,000,000; 0 = remove the boost; real followers stay)', u.bonusFollowers); if (n != null) act(() => PUT('/api/admin/users/' + u.username, { bonusFollowers: n }), 'Followers boost set to ' + big(n)); } }, 'Set followers'),
+              h('button', { class: 'gbtn sm primary', onclick: () => { if (confirm('Set ' + u.username + ' to the max: 1000M (1B) boosted followers?')) act(() => PUT('/api/admin/users/' + u.username, { bonusFollowers: u.maxFollowers || 1e9 }), u.username + ' now has 1B+ followers 🔥'); } }, 'Max 1000M 🔥'),
+              h('button', { class: 'gbtn sm', onclick: () => { const n = num('Set boosted following for ' + u.username + ' (max 1M = 1,000,000; 0 = none)', u.bonusFollowing || 0); if (n != null) act(() => PUT('/api/admin/users/' + u.username, { bonusFollowing: n }), 'Following boost set to ' + big(n)); } }, 'Set following'),
               h('button', { class: 'gbtn sm', onclick: () => act(() => POST('/api/admin/reset-boosts', { username: u.username }), 'Boosts reset for ' + u.username) }, 'Reset boosts'),
               u.admin ? null : h('button', { class: 'gbtn sm', onclick: () => { if (confirm((u.suspended ? 'Unsuspend ' : 'Suspend ') + u.username + '?')) act(() => PUT('/api/admin/users/' + u.username, { suspended: !u.suspended }), u.suspended ? 'Unsuspended' : 'Suspended'); } }, u.suspended ? 'Unsuspend' : 'Suspend'),
               u.admin || u.demo ? null : h('button', { class: 'gbtn sm dangerb', onclick: () => { if (confirm('Delete ' + u.username + ' and everything they posted? This cannot be undone.')) act(() => DEL('/api/admin/users/' + u.username), 'Account deleted'); } }, 'Delete')))));
@@ -1976,28 +1991,33 @@ addRoute(/^#\/admin$/, async () => {
       } else if (tab === 'bots') {
         const d = await GET('/api/admin/bots');
         const head = h('div', { class: 'glass bot-head' }, h('b', null, fmtN(d.total) + ' bot accounts'),
-          h('small', null, 'Bots are created automatically when you boost. They have names + photos, show up in followers / likes lists and search, but cannot log in, post or message anyone. Max ' + fmtN(d.actionCap) + ' per action, ' + fmtN(d.poolCap) + ' per account.'));
+          h('small', null, 'Bots are created automatically when you boost. They have names + photos, show up in followers / likes lists and search, but cannot log in, post or message anyone. Up to ' + fmtN(d.poolCap) + ' bots per account (or post) with names; a bigger boost (followers up to ' + big(d.maxFollowers || 1e9) + ', likes / views / comments up to ' + big(d.maxCount || 1e6) + ') adds the rest as a number.'));
         const boosted = h('div', { class: 'list glass slist' }, ...(d.boosted.length ? d.boosted.map(u => h('div', { class: 'arow' },
-          h('div', { class: 'srow' }, avatar(u), h('div', { class: 'st' }, h('b', null, u.username), h('small', null, '🤖 ' + fmtN(u.botFollowers) + ' bot followers · ' + fmtN(u.realFollowers) + ' real' + (u.botLikes ? ' · ❤ ' + fmtN(u.botLikes) + ' bot likes' : '') + (u.botComments ? ' · 💬 ' + u.botComments : '')))),
+          h('div', { class: 'srow' }, avatar(u), h('div', { class: 'st' }, h('b', null, u.username), h('small', null, '🤖 ' + fmtN(u.botFollowers) + ' bot followers' + (u.extraFollowers ? ' + ' + big(u.extraFollowers) + ' boost' : '') + ' · ' + fmtN(u.realFollowers) + ' real' + ((u.botLikes || u.extraLikes) ? ' · ❤ ' + big((u.botLikes || 0) + (u.extraLikes || 0)) + ' boosted likes' : '') + ((u.botComments || u.extraComments) ? ' · 💬 ' + big((u.botComments || 0) + (u.extraComments || 0)) : '')))),
           h('div', { class: 'abtns' }, h('a', { class: 'gbtn sm', href: '#/u/' + u.username + '/followers' }, 'See followers'),
             h('button', { class: 'gbtn sm dangerb', onclick: () => { if (confirm('Remove ALL bots from ' + u.username + '? (bot followers, bot likes and bot comments). Real followers stay.')) act(() => DEL('/api/admin/users/' + u.username + '/bots'), 'Bots removed from ' + u.username); } }, 'Remove all bots from this user')))) : [h('div', { class: 'empty' }, 'No one has bot followers yet. Use + Followers in the Users tab.')]));
         const bl = h('div', { class: 'list glass slist' }, ...d.bots.map(b => h('div', { class: 'srow' }, avatar(b), h('div', { class: 'st' }, h('b', null, b.username, b.private ? ' 🔒' : ''), h('small', null, b.name + (b.bio ? ' · ' + b.bio : ''))))));
         body.replaceChildren(head, h('div', { class: 'section-t' }, 'Users with bots'), boosted, h('div', { class: 'section-t' }, 'Newest bots' + (d.total > d.bots.length ? ' (showing ' + d.bots.length + ')' : '')), d.bots.length ? bl : h('div', { class: 'empty' }, 'No bots yet'));
       } else if (tab === 'posts') {
         const d = await GET('/api/admin/posts');
-        const boost = (p, k, label) => h('button', { class: 'gbtn sm primary', onclick: () => { const n = num('Add how many ' + label + '?', 100); if (n != null) act(() => PUT('/api/admin/posts/' + p.id, { ['add' + k]: n }), label + ' boosted'); } }, '+ ' + label);
+        const boost = (p, k, label) => h('button', { class: 'gbtn sm primary', onclick: () => { const n = num('Add how many ' + label + '? (total boost max 1M = 1,000,000)', 100); if (n != null) act(() => PUT('/api/admin/posts/' + p.id, { ['add' + k]: n }), label + ' boosted'); } }, '+ ' + label);
+        const setAll = (p) => h('button', { class: 'gbtn sm', onclick: () => { // v1.6.4: type the exact totals (max 1M each); empty = keep
+          const upd = {}; for (const [k, label, cur] of [['Likes', 'likes', p.bonusLikes], ['Views', 'views', p.bonusViews], ['Comments', 'comments', p.bonusComments]]) {
+            const n = num('Set boosted ' + label + ' (max 1M = 1,000,000). Leave empty to keep ' + fmtN(cur) + '.', cur); if (n != null) upd['bonus' + k] = n; }
+          if (Object.keys(upd).length) act(() => PUT('/api/admin/posts/' + p.id, upd), 'Counts set'); } }, 'Set counts');
+        const maxAll = (p) => h('button', { class: 'gbtn sm primary', onclick: () => { const m = p.maxCount || 1e6; if (confirm('Set this post to the max: 1M likes, 1M views and 1M comments?')) act(() => PUT('/api/admin/posts/' + p.id, { bonusLikes: m, bonusViews: m, bonusComments: m }), 'Post maxed: 1M likes · 1M views · 1M comments 🔥'); } }, 'Max 1M 🔥');
         body.replaceChildren(h('div', { class: 'list glass slist' }, ...(d.posts.length ? d.posts.map(p => h('div', { class: 'arow' },
           h('div', { class: 'srow' }, h('a', { href: '#/p/' + p.id }, p.type === 'video' ? h('video', { class: 'thumb', src: p.media + '#t=0.5', muted: true, preload: 'metadata' }) : h('img', { class: 'thumb', src: p.media, alt: '' })),
-            h('div', { class: 'st' }, h('b', null, p.user + (p.type === 'video' ? ' · Reel' : '')), h('small', null, '❤ ' + fmtN(p.realLikes) + ' real + ' + fmtN(p.bonusLikes) + ' bots · 💬 ' + p.realComments + ' + ' + p.bonusComments + ' bots · 👁 ' + fmtN(p.realViews) + ' + ' + fmtN(p.bonusViews)), h('small', null, p.caption))),
-          h('div', { class: 'abtns' }, boost(p, 'Likes', 'Likes'), boost(p, 'Views', 'Views'), boost(p, 'Comments', 'Comments'),
+            h('div', { class: 'st' }, h('b', null, p.user + (p.type === 'video' ? ' · Reel' : '')), h('small', null, '❤ ' + fmtN(p.realLikes) + ' real + ' + big(p.bonusLikes) + ' boost · 💬 ' + p.realComments + ' + ' + big(p.bonusComments) + ' boost · 👁 ' + fmtN(p.realViews) + ' + ' + big(p.bonusViews)), h('small', null, p.caption))),
+          h('div', { class: 'abtns' }, boost(p, 'Likes', 'Likes'), boost(p, 'Views', 'Views'), boost(p, 'Comments', 'Comments'), setAll(p), maxAll(p),
             h('button', { class: 'gbtn sm', onclick: () => act(() => PUT('/api/admin/posts/' + p.id, { bonusLikes: 0, bonusViews: 0, bonusComments: 0 }), 'Boosts reset') }, 'Reset'),
             h('button', { class: 'gbtn sm dangerb', onclick: () => { if (confirm('Delete this post?')) act(() => DEL('/api/admin/posts/' + p.id), 'Post deleted'); } }, 'Delete')))) : [h('div', { class: 'empty' }, 'No posts yet')])));
       } else if (tab === 'stories') {
         const d = await GET('/api/admin/stories');
         body.replaceChildren(h('div', { class: 'list glass slist' }, ...(d.stories.length ? d.stories.map(s => h('div', { class: 'arow' },
           h('div', { class: 'srow' }, s.type === 'video' ? h('video', { class: 'thumb', src: s.media + '#t=0.5', muted: true, preload: 'metadata' }) : h('img', { class: 'thumb', src: s.media, alt: '' }),
-            h('div', { class: 'st' }, h('b', null, s.user + (s.close ? ' · Close Friends' : '')), h('small', null, '👁 ' + s.realViews + ' real + ' + s.bonusViews + ' boost · ' + ago(s.created) + ' ago'))),
-          h('div', { class: 'abtns' }, h('button', { class: 'gbtn sm primary', onclick: () => { const n = num('Add how many story views?', 100); if (n != null) act(() => PUT('/api/admin/stories/' + s.id, { addViews: n }), 'Views boosted'); } }, '+ Views'),
+            h('div', { class: 'st' }, h('b', null, s.user + (s.close ? ' · Close Friends' : '')), h('small', null, '👁 ' + s.realViews + ' real + ' + big(s.bonusViews) + ' boost · ' + ago(s.created) + ' ago'))),
+          h('div', { class: 'abtns' }, h('button', { class: 'gbtn sm primary', onclick: () => { const n = num('Add how many story views? (total boost max 1M)', 100); if (n != null) act(() => PUT('/api/admin/stories/' + s.id, { addViews: n }), 'Views boosted'); } }, '+ Views'),
             h('button', { class: 'gbtn sm', onclick: () => act(() => PUT('/api/admin/stories/' + s.id, { bonusViews: 0 }), 'Reset') }, 'Reset')))) : [h('div', { class: 'empty' }, 'No live stories')])));
       } else {
         const d = await GET('/api/admin/comments');

@@ -346,7 +346,8 @@ async function waitFor(fn, ms = 6000) { const t = Date.now(); while (Date.now() 
     ok(ab.status === 200 && ab.data.total >= 50 && ab.data.boosted.some(u => u.username === ua && u.botFollowers === 50), 'admin Bots tab shows the pool and A with 50 bots');
     const st = (await M.get('/api/admin/stats')).data.stats; ok(st.bots >= 50 && st.users < st.users + st.bots, 'stats count bots separately from real users');
     ok((await Bc.put('/api/admin/users/' + ua, { addFollowers: 5 })).status === 403 && (await Bc.req('DELETE', '/api/admin/users/' + ua + '/bots')).status === 403, 'normal user cannot add/remove bots (403)');
-    ok((await M.put('/api/admin/users/' + ua, { addFollowers: 10001 })).status === 400, 'per-action cap (10,000) enforced');
+    const a10k = await M.put('/api/admin/users/' + ua, { addFollowers: 10001 });
+    ok(a10k.status === 200 && a10k.data.user.bonusFollowers === 10051 && a10k.data.user.botFollowers <= 10050, 'v1.6.4: +10,001 in one action works; bot rows still capped per action, total exact');
     ok((await M.put('/api/admin/users/' + ua, { bonusFollowers: 10 })).data.user.botFollowers === 10 && (await A.get('/api/users/' + ua)).data.user.followers === realIds.size + 10, 'set boost lower (10) removes 40 bots');
     const after10 = await listAll(A, '/api/users/' + ua + '/followers'); ok([...realIds].every(i => after10.some(u => u.id === i)), 'lowering the boost kept every real follower');
     ok((await M.post('/api/admin/reset-boosts', { username: ua })).status === 200, 'reset A boosts');
@@ -373,6 +374,40 @@ async function waitFor(fn, ms = 6000) { const t = Date.now(); while (Date.now() 
     ok((await Bc.get('/api/posts/' + pidM + '/likes')).data.total === realLikes, 'liked-by list back to real likers');
     await M.put('/api/admin/users/' + ua, { addFollowers: 5 }); const rm = await M.req('DELETE', '/api/admin/users/' + ua + '/bots');
     ok(rm.status === 200 && rm.data.removed.followers === 5 && rm.data.user.realFollowers === realIds.size, '"Remove all bots from this user" removes bots, keeps real followers');
+    console.log('— v1.6.4 big boosts (1B followers, 1M likes / views / comments / following)');
+    {
+      const realN = (await A.get('/api/users/' + ua)).data.user.followers;
+      const g = await M.put('/api/admin/users/' + ua, { bonusFollowers: 1000000000 });
+      ok(g.status === 200 && g.data.user.bonusFollowers === 1000000000 && g.data.user.shownFollowers === realN + 1000000000, 'admin sets 1,000,000,000 (1000M) followers');
+      ok(g.data.user.botFollowers <= 30000 && g.data.user.extraFollowers >= 1000000000 - 30000, 'only bot rows up to the cap; the rest is a stored count (' + g.data.user.botFollowers + ' rows)');
+      const pr = (await C.get('/api/users/' + ua)).data.user; ok(pr.followers === realN + 1000000000, 'profile shows ' + pr.followers + ' followers to other users');
+      const fl = await A.get('/api/users/' + ua + '/followers?offset=0&limit=20'); ok(fl.status === 200 && fl.data.shown === realN + 1000000000 && fl.data.total <= realN + 30000 && fl.data.users.length === 20, 'followers list: header count 1B, list paginates over real + bot rows');
+      ok((await M.put('/api/admin/users/' + ua, { bonusFollowers: 1000000001 })).status === 400, 'more than 1,000,000,000 followers refused (400)');
+      ok((await M.put('/api/admin/users/' + ua, { addFollowers: 1 })).status === 400, 'adding past the 1B max refused (400)');
+      ok((await M.put('/api/admin/users/' + ua, { bonusFollowers: 'abc' })).status === 400 && (await M.put('/api/admin/users/' + ua, { bonusFollowers: 1e300 })).status === 400, 'non-number / huge input refused');
+      const st9 = (await M.get('/api/admin/stats')).data.stats; ok(st9.bots < 100000 && st9.botFollows < 100000, 'no billion rows: ' + st9.bots + ' bots, ' + st9.botFollows + ' bot follow rows in the database');
+      const fw = await M.put('/api/admin/users/' + ua, { bonusFollowing: 1000000 }); ok(fw.status === 200 && fw.data.user.shownFollowing === fw.data.user.following + 1000000, 'admin sets 1,000,000 following');
+      ok((await C.get('/api/users/' + ua)).data.user.following === fw.data.user.shownFollowing, 'profile shows the boosted following count');
+      ok((await M.put('/api/admin/users/' + ua, { bonusFollowing: 1000001 })).status === 400, 'more than 1,000,000 following refused (400)');
+      const pidB = mp.data.post.id; const base = (await Bc.get('/api/posts/' + pidB)).data.post;
+      const pb = await M.put('/api/admin/posts/' + pidB, { bonusLikes: 1000000, bonusViews: 1000000, bonusComments: 1000000 });
+      ok(pb.status === 200 && pb.data.post.bonusLikes === 1000000 && pb.data.post.bonusViews === 1000000 && pb.data.post.bonusComments === 1000000, 'admin sets a post to 1M likes, 1M views, 1M comments');
+      ok(pb.data.post.botLikes <= 30000 && pb.data.post.botComments <= 300, 'likes/comments: bot rows capped (' + pb.data.post.botLikes + ' / ' + pb.data.post.botComments + '), rest stored as a count');
+      const pv9 = (await Bc.get('/api/posts/' + pidB)).data.post;
+      ok(pv9.likes === base.likes + 1000000 && pv9.views === base.views + 1000000 && pv9.comments === base.comments + 1000000, 'viewer sees ' + pv9.likes + ' likes · ' + pv9.views + ' views · ' + pv9.comments + ' comments');
+      ok((await Bc.get('/api/posts/' + pidB + '/likes?offset=0&limit=20')).data.shown === pv9.likes, 'liked-by sheet header uses the full count');
+      ok((await M.put('/api/admin/posts/' + pidB, { bonusLikes: 1000001 })).status === 400 && (await M.put('/api/admin/posts/' + pidB, { bonusViews: 1000001 })).status === 400 && (await M.put('/api/admin/posts/' + pidB, { bonusComments: 1000001 })).status === 400, 'more than 1,000,000 likes / views / comments refused (400)');
+      ok((await M.put('/api/admin/posts/' + pidB, { addViews: 1 })).status === 400, 'adding past the 1M max refused (400)');
+      ok((await M.put('/api/admin/posts/' + pidB, { bonusLikes: 999999 })).data.post.bonusLikes === 999999, 'lowering likes to 999,999 works');
+      ok((await Bc.put('/api/admin/users/' + ua, { bonusFollowers: 1000000000 })).status === 403 && (await Bc.put('/api/admin/users/' + ub, { bonusFollowers: 1000000000 })).status === 403, 'normal user cannot set 1B followers (not even on their own account) (403)');
+      ok((await Bc.put('/api/admin/posts/' + pidB, { bonusLikes: 1000000 })).status === 403 && (await new Client('anon').put('/api/admin/posts/' + pidB, { bonusLikes: 1000000 })).status === 401, 'normal user / logged-out cannot set post counts (403 / 401)');
+      ok((await Bc.put('/api/admin/users/' + ub, { bonusFollowing: 1000000 })).status === 403, 'normal user cannot set following (403)');
+      const rmb = await M.req('DELETE', '/api/admin/users/' + ua + '/bots'); ok(rmb.status === 200 && rmb.data.user.shownFollowers === rmb.data.user.realFollowers, '"Remove all bots" also clears the stored 1B count');
+      ok((await Bc.get('/api/posts/' + pidB)).data.post.likes === base.likes, '"Remove all bots" clears the stored likes too');
+      ok((await M.post('/api/admin/reset-boosts', { username: ua })).status === 200 && (await C.get('/api/users/' + ua)).data.user.following === fw.data.user.following && (await Bc.get('/api/posts/' + pidB)).data.post.views === base.views, 'reset boosts clears following + views boosts');
+      const sb = await M.put('/api/admin/users/' + ua, { addFollowers: 50 }); ok(sb.data.user.botFollowers === 50 && !sb.data.user.extraFollowers, 'small boosts still create named bot followers only');
+      await M.post('/api/admin/reset-boosts', { username: ua });
+    }
     await M.put('/api/admin/users/' + ua, { verified: false });
     ok((await M.put('/api/admin/users/' + ud, { suspended: true })).status === 200 && (await D.get('/api/me')).status === 401, 'admin suspends D (logged out)');
     ok((await new Client('x').post('/api/login', { username: ud, password: pw })).status === 403, 'suspended D cannot log in');
@@ -405,6 +440,32 @@ async function waitFor(fn, ms = 6000) { const t = Date.now(); while (Date.now() 
     ok(/max-age=\d+/.test(rg.headers.get('cache-control') || '') && rgb.slice(4, 8).toString() === 'ftyp', 'reel video has cache headers and is the real mp4');
     ok((await fetch(BASE + '/reels-media/' + names[1].replace('.mp4', '.jpg'))).status === 200, 'reel poster image is served');
     ok((await fetch(BASE + '/reels-media/..%2Fdb.json')).status === 404 && (await fetch(BASE + '/reels-media/12345678.mp4?nc=' + rnd)).status === 404, 'reels-media serves only imported files (no traversal)');
+    console.log('— v1.6.1 HD swap + reel owner');
+    const n4 = '9' + tag + '4.mp4', n5 = '9' + tag + '5.mp4', n6 = '9' + tag + '6.mp4';
+    const m2 = (o) => ({ 'x-reel-meta': Buffer.from(JSON.stringify(o)).toString('base64') });
+    const beforeSwap = (await Bc.get('/api/posts/' + recs[names[2]].pid)).data.post;
+    ok((await M.raw('PUT', '/api/admin/reels/inbox/' + n4, SAMPLE_MP4, m2({ title: 'ignored', duration: 3, source_name: 'hd', replaces: names[2] }))).status === 201, 'admin uploads an HD file that replaces an imported reel');
+    const sw = await M.post('/api/admin/reels/import?limit=10&only=' + n4);
+    const afterSwap = (await Bc.get('/api/posts/' + recs[names[2]].pid)).data.post;
+    ok(sw.status === 200 && sw.data.replaced === 1 && afterSwap && afterSwap.id === beforeSwap.id && afterSwap.media === '/reels-media/' + n4 && afterSwap.likes === beforeSwap.likes && afterSwap.comments === beforeSwap.comments && afterSwap.caption === beforeSwap.caption && afterSwap.created === beforeSwap.created, 'HD swap keeps the same reel (id, likes, comments, caption, time) with the new video URL');
+    const recs4 = (await M.get('/api/admin/reels?files=' + names[2] + ',' + n4)).data.records;
+    ok(recs4[n4] && recs4[n4].pid === beforeSwap.id && recs4[n4].replaces === names[2] && recs4[names[2]] && recs4[names[2]].replacedBy === n4 && !recs4[names[2]].pid, 'import records: new file owns the reel, old file marked replaced');
+    const rg4 = await fetch(BASE + '/reels-media/' + n4 + '?nc=' + rnd, { headers: { Range: 'bytes=0-9' } });
+    ok(rg4.status === 206 && (await fetch(BASE + '/reels-media/' + names[2] + '?nc2=' + rnd)).status === 404 && (await fetch(BASE + '/reels-media/' + n4.replace('.mp4', '.jpg') + '?nc=' + rnd)).status === 200, 'new video streams (206) with a poster; the old file is gone (404)');
+    ok((await M.post('/api/admin/reels/import?limit=10&only=' + n4)).data.imported === 0 && (await M.get('/api/admin/reels')).data.imported === before3, 'HD swap adds no extra reel and is idempotent');
+    await M.raw('PUT', '/api/admin/reels/inbox/' + n6, SAMPLE_MP4, m2({ title: 'x', duration: 2, replaces: '9' + tag + '8.mp4' }));
+    const bad = await M.post('/api/admin/reels/import?limit=10&only=' + n6);
+    ok(bad.data.imported === 0 && bad.data.failed.includes(n6) && (await M.get('/api/admin/reels')).data.imported === before3, 'a swap whose target reel does not exist is refused (no new reel)');
+    await M.raw('PUT', '/api/admin/reels/inbox/' + n5, SAMPLE_MP4, m2({ title: 'Owner test reel', duration: 2, source_name: 'owner', owner: ub, kind: 'stickman' }));
+    const io5 = await M.post('/api/admin/reels/import?limit=10&only=' + n5);
+    const p5 = io5.data.files && io5.data.files[0] ? (await Bc.get('/api/posts/' + io5.data.files[0].pid)).data.post : null;
+    ok(p5 && p5.user && p5.user.username === ub && /Owner test reel/.test(p5.caption), 'manifest owner posts the reel from that real account');
+    for (const f of [n6]) { await M.req('DELETE', '/api/admin/reels/inbox/' + f); }
+    console.log('— v1.6.2 bulk delete of imported reels');
+    ok((await Bc.post('/api/admin/reels/delete', { files: [n5] })).status === 403, 'non-admin cannot bulk-delete reels (403)');
+    const bd = await M.post('/api/admin/reels/delete', { files: [n5, '9' + tag + '7.mp4'] });
+    ok(bd.status === 200 && bd.data.deleted === 1 && bd.data.notFound.includes('9' + tag + '7.mp4') && (await Bc.get('/api/posts/' + p5.id)).status === 404, 'admin bulk delete removes the reel (unknown names reported, nothing else touched)');
+    ok((await M.get('/api/admin/reels/inbox')).data.files[n5] === undefined && (await fetch(BASE + '/reels-media/' + n5 + '?nc3=' + rnd)).status === 404 && (await M.post('/api/admin/reels/import?limit=10&only=' + n5)).data.imported === 0, 'bulk delete also frees the import-folder copy; the reel does not come back');
     // feed pagination: a brand-new account (follows nobody) already gets reels in Home, Reels and Explore, page by page
     const N = new Client('n'); await N.post('/api/signup', { username: 'tn_' + rnd, password: pw, name: 'Test N' });
     const f1 = await N.get('/api/feed?limit=2'); ok(f1.status === 200 && f1.data.posts.length === 2 && f1.data.more === true, 'new user home feed is not empty (reels mixed in), page 1');
@@ -425,7 +486,8 @@ async function waitFor(fn, ms = 6000) { const t = Date.now(); while (Date.now() 
       await M.put('/api/admin/reels/settings', { auto: auto0 });
     }
     const recs2 = (await M.get('/api/admin/reels?files=' + names.join(','))).data.records;
-    let cleaned = 0; for (const n of names) { if (recs2[n] && recs2[n].pid && (await M.req('DELETE', '/api/admin/posts/' + recs2[n].pid)).status === 200) cleaned++; await M.req('DELETE', '/api/admin/reels/inbox/' + n); await M.req('DELETE', '/api/admin/reels/inbox/' + n.replace('.mp4', '.jpg')); }
+    const allNames = names.concat([n4, n5]); const recs3 = (await M.get('/api/admin/reels?files=' + allNames.join(','))).data.records;
+    let cleaned = 0; for (const n of allNames) { if (recs3[n] && recs3[n].pid && (await M.req('DELETE', '/api/admin/posts/' + recs3[n].pid)).status === 200) cleaned++; await M.req('DELETE', '/api/admin/reels/inbox/' + n); await M.req('DELETE', '/api/admin/reels/inbox/' + n.replace('.mp4', '.jpg')); }
     ok(cleaned === 3 && (await M.get('/api/admin/reels/inbox')).data.files[names[0]] === undefined, 'test reels + test files removed');
     ok((await M.post('/api/admin/reels/import?limit=10&only=' + names.join(','))).data.imported === 0 && (await fetch(BASE + '/reels-media/' + names[0] + '?nc=' + rnd)).status === 404, 'a deleted reel is not imported again and its file is gone');
     await M.post('/api/logout');

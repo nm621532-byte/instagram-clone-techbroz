@@ -46,6 +46,14 @@ Ab app mein **hazaaron anime edit reels** hain! Reels tab (neeche 🎬 icon) kho
 
 ![Reels](docs/screenshots/v13_reels.jpg)
 
+## v1.6.4 — 1000M followers, 1M likes 🚀 (Hinglish)
+
+- 👑 Admin ab kisi bhi account ko **1000 million (1B) followers** tak de sakta hai, aur post pe **1 million (1M) likes / views / comments**, plus **1M following** aur **1M story views**.
+- 🔢 Bade number Instagram jaise dikhte hain: **1B, 999.9M, 1M, 12.5K**.
+- 🗄️ Database nahi phoolta: 30,000 tak naam wale bots, uske upar ka hissa sirf ek number ke roop mein save hota hai — 1B followers = sirf kuch KB.
+- ⚡ Admin panel mein **Max 1000M 🔥**, **Max 1M 🔥**, **Set counts**, **Set following** buttons; number box mein `1000M`, `1B`, `1M`, `500K` bhi likh sakte ho.
+- 🔒 Sirf admin (server pe check) — normal user 403.
+
 ## v1.2 — Bot boosts: followers list mein naam bhi dikhte hain (Hinglish)
 
 <p>
@@ -61,7 +69,7 @@ v1.1 mein admin boost sirf number badhata tha — profile pe "125 followers" dik
 - 🛠️ Admin panel mein naya **Bots 🤖 tab** — kitne bots hain, kis user pe kitne bots, aur "**Remove all bots from this user**" button. Stats mein bots alag gine jaate hain.
 - ⚡ Followers aur likes list ab **pages mein load** hoti hai (scroll karo, aur aate jaate hain) — 10,000+ followers pe bhi app smooth.
 - 🔒 Bots login nahi kar sakte (koi password nahi), kisi ko message/notification nahi bhejte, aur private account ka content nahi dekh sakte. Search mein normal accounts jaise dikhte hain.
-- Limits: ek baar mein max 10,000 followers/likes, ek account pe max 30,000 bot followers, ek post pe max 300 bot comments.
+- Limits (v1.2): ek baar mein max 10,000 followers/likes, ek account pe max 30,000 bot followers, ek post pe max 300 bot comments. **v1.6.4 se** total boost: followers 1,000,000,000 tak, likes/views/comments 1,000,000 tak (bots ke upar ka hissa number ke roop mein).
 
 ## v1.1 — Settings & Privacy (Hinglish)
 
@@ -152,7 +160,7 @@ Admin follower/like/comment boosts create **bot accounts** (flag `isBot`, no pas
 - Private accounts, blocks, Close Friends and hidden stories are checked on every read **and** on the media file URLs.
 - DMs are addressed as "me + other user"; DM photos are served only to the two people in that chat.
 - Uploads are checked by their real bytes and size; text is rendered as text + strict CSP; CSRF guard (`X-IG` header); no password hash in any response or data export.
-- `test/smoke.mjs` — **407 checks** (v1.6 adds 12 Home-feed checks: post, then GET feed twice → your own post is not at position 0 on the refresh, shown once via pin, followers still see it on top, pin only for your own post; v1.5 adds 74 privacy checks: wrong PIN, lockout, locked chat not in the inbox API, outsiders can't read or lock a chat, vanish deletion, view-once 404, App Lock on other sessions; before that **321 checks** (the 70 from v1.0 + privacy, follow requests, Close Friends, block, DM permissions, comments off, hidden words, password change, sessions, export, deactivate, "another user cannot change my settings", admin-only APIs, and v1.2 bot boosts: list fills with named bots, pagination, reset keeps real follows, bot likes/comments, bots cannot log in; v1.3 reels import: 3 sample reels, idempotent re-run, non-admin 403, path traversal blocked, Range 206, posters, feed/reels/explore pagination; `IG_DESTRUCTIVE=1` also tests "delete all imported"; v1.4: Classic mode per user, editor validation, drafts owner-only (404 for others, files private), audience followers/close friends on post/feed/profile/media, tag notifications, music/hashtags, fresh reels order with no repeats, deep link start=<id>). Run it before every deploy:
+- `test/smoke.mjs` — **442 checks** (v1.6.4 adds 25 big-boost checks: 1B followers, 1M likes/views/comments/following, limits, no billion rows, normal users 403; v1.6 adds 12 Home-feed checks: post, then GET feed twice → your own post is not at position 0 on the refresh, shown once via pin, followers still see it on top, pin only for your own post; v1.5 adds 74 privacy checks: wrong PIN, lockout, locked chat not in the inbox API, outsiders can't read or lock a chat, vanish deletion, view-once 404, App Lock on other sessions; before that **321 checks** (the 70 from v1.0 + privacy, follow requests, Close Friends, block, DM permissions, comments off, hidden words, password change, sessions, export, deactivate, "another user cannot change my settings", admin-only APIs, and v1.2 bot boosts: list fills with named bots, pagination, reset keeps real follows, bot likes/comments, bots cannot log in; v1.3 reels import: 3 sample reels, idempotent re-run, non-admin 403, path traversal blocked, Range 206, posters, feed/reels/explore pagination; `IG_DESTRUCTIVE=1` also tests "delete all imported"; v1.4: Classic mode per user, editor validation, drafts owner-only (404 for others, files private), audience followers/close friends on post/feed/profile/media, tag notifications, music/hashtags, fresh reels order with no repeats, deep link start=<id>). Run it before every deploy:
 ```bash
 node server.js &
 node test/smoke.mjs http://localhost:3000

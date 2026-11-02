@@ -1,5 +1,35 @@
 # Changelog
 
+## v1.6.4 — 2026-11-02 · Big numbers 🚀 (1B followers, 1M everything)
+- **Followers up to 1,000,000,000 (1000M = 1B)** per account (admin boost). **Likes, views, comments, following and story views up to 1,000,000 (1M)**.
+- How it is stored (no billion rows): a boost total = **bot rows** (named bots, still max 30,000 followers/likes and 300 comments per account/post; each admin action adds at most 10,000 / 200 new rows) **+ a stored extra count** (`bonusFollowers` / `bonusLikes` / `bonusComments` / `bonusViews` / `bonusFollowing`). The shown number is always exactly what the admin typed. Setting 1B followers adds at most 10,000 rows (a few hundred KB) to the database.
+- Server: new limits `MAX_FOLLOWER_BOOST = 1,000,000,000`, `MAX_COUNT_BOOST = 1,000,000`; over the limit, non-numbers and huge values answer 400 with a clear message. Old caps removed: 10,000 per action / 30,000 per account for the total (now only for bot rows) and the old 100,000,000 input limit. All boost routes stay admin-only (role + password re-check on the server; normal users 403, logged out 401).
+- New admin boosts: **Set following** (users), **Set counts** (exact likes / views / comments for a post), one-tap **Max 1000M 🔥** (followers) and **Max 1M 🔥** (post likes + views + comments). Number boxes accept shortcuts: `1000M`, `1B`, `1M`, `500K`, `2.5L`, `10Cr`.
+- Big numbers display like Instagram everywhere: `9,999 · 12.5K · 999.9K · 1M · 999.9M · 1B` (rounded down). Followers / following / Likes list headers show the full boosted count; "Liked by X and 1M others".
+- "Remove all bots from this user" and "Reset boosts" also clear the stored extra counts.
+- Client file renamed to `app-v164.js` so the CDN serves the new code at once.
+- Start-up writes `db.backup-v1.6.3.json` (schema 9) before anything else.
+- Smoke test: 442 checks (25 new: 1B followers, 1M likes/views/comments/following, limits, no-billion-rows, normal user cannot set — not even on their own account).
+- Android app unchanged (it loads the live site), so no new APK for this version.
+
+## v1.6.3 — 2026-11-02 · Meme reels 😂
+- 500 "Alpha P. Meme Page" reels from Noor's third Drive folder (the folder holds Drive shortcuts; each shortcut is resolved to its original file, which is imported untouched when it is H.264).
+- Importer: new `meme` comment style (Hinglish meme comments) beside `anime` and `stickman`.
+
+## v1.6.2 — 2026-11-02 · Anime trim to 1500 ✂️
+- Admin `POST /api/admin/reels/delete {files:[...]}` (admin only): removes imported reels completely — post, bot likes/comments, notifications, served video + poster and the import-folder copies (frees disk). Unknown names are reported back, nothing else is touched.
+- Start-up writes `db.backup-pre-anime-trim.json` (schema 8) before anything is deleted.
+- On Noor's ask the anime reels were trimmed from 3071 to the 1500 best (all 1080x1920 ones first, then the highest-bitrate 720p ones); all 1500 now play the untouched Drive originals.
+- Smoke test: 417 checks.
+
+## v1.6.1 — 2026-11-02 · HD reels 🎬
+- **880 new stickman reels** imported from Noor's second Drive folder, at the originals' own quality (H.264 sources copied untouched; AV1 sources converted to H.264 CRF 20 at source resolution so every phone plays them). Posted by the reel bot pages with stickman-style bot comments.
+- **Anime reels upgraded to HD in place**: each existing reel keeps its id, likes, comments, caption and date; only its video file is swapped for the original-quality version (up to 1080x1920), under a new file name so the CDN never serves the old copy. The old low-quality file is deleted.
+- Importer: manifest entries can carry `replaces` (HD swap of an already imported reel), `owner` (post from a real account) and `kind` (`anime` / `stickman` comment style).
+- Reels player: the reel on screen and the next one buffer fully (`preload=auto`) so a swipe starts at once; posters are now up to 720 px wide.
+- Database backup `db.backup-v1.6.json` written on first start (schema 7).
+- Smoke test grows from 407 to 414 checks (HD swap keeps likes/comments/id, old file 404, swap to a missing reel refused, owner field).
+
 ## v1.6 — 2026-11-02 · Home feed fix 🏠
 - **Your own posts no longer stick to the top of Home.** Right after you share, your new post shows on top once (so you see it went up). On any refresh after that (tap Home again, reopen the app, pull a new mix) Home starts with posts from other people; your own posts sit deep in the mix (not in the first 24, at most 3) and always stay on your profile, like Instagram.
 - Root cause: v1.4's fresh Home order put "your own + followed posts from the last 3 days" on top of every refresh, so your newest post was always first. Now only posts from people you follow get that lift; your followers still see your new post on top of *their* Home.

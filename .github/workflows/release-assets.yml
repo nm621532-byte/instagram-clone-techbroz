@@ -27,12 +27,18 @@ jobs:
       - name: Download the signed APK and verify it
         run: |
           TAG="${{ github.event.release.tag_name || inputs.tag }}"
-          curl -fL --retry 3 -o "InstaGlass-$TAG.apk" "https://instaglass-live.sites.tab.bot/InstaGlass-$TAG.apk"
-          if [ -f "release/InstaGlass-$TAG.apk.sha256" ]; then sha256sum -c "release/InstaGlass-$TAG.apk.sha256"; fi
-          sha256sum "InstaGlass-$TAG.apk" "instaglass-web-$TAG.zip" > SHA256SUMS
+          # web-only releases (e.g. v1.6.4: server + web changes, the Android app loads the live site) have no APK
+          if [ -f "release/InstaGlass-$TAG.apk.sha256" ]; then
+            curl -fL --retry 3 -o "InstaGlass-$TAG.apk" "https://instaglass-live.sites.tab.bot/InstaGlass-$TAG.apk"
+            sha256sum -c "release/InstaGlass-$TAG.apk.sha256"
+            sha256sum "InstaGlass-$TAG.apk" "instaglass-web-$TAG.zip" > SHA256SUMS
+          else
+            sha256sum "instaglass-web-$TAG.zip" > SHA256SUMS
+          fi
       - name: Upload to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ github.event.release.tag_name || inputs.tag }}"
-          gh release upload "$TAG" "InstaGlass-$TAG.apk" "instaglass-web-$TAG.zip" SHA256SUMS --clobber --repo ${{ github.repository }}
+          FILES="instaglass-web-$TAG.zip SHA256SUMS"; [ -f "InstaGlass-$TAG.apk" ] && FILES="InstaGlass-$TAG.apk $FILES"
+          gh release upload "$TAG" $FILES --clobber --repo ${{ github.repository }}
