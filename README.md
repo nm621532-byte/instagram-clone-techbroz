@@ -1,16 +1,27 @@
-# Private Insta 🔒📸 — Instagram-style clone in Liquid Glass UI (v1.3)
+# Private Insta 🔒📸 — Instagram-style clone in Liquid Glass UI (v1.4)
 
 **Live:** https://instaglass-live.sites.tab.bot  ·  test login: `demo` / `demo1234` (or sign up — it takes 5 seconds)
-**Download v1.3:** [Android APK](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.3/InstaGlass-v1.3.apk) · [Web app ZIP](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.3/instaglass-web-v1.3.zip) · [All releases](https://github.com/nm621532-byte/instagram-clone-techbroz/releases)
+**Download v1.4:** [Android APK](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.4/InstaGlass-v1.4.apk) · [Web app ZIP](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.4/instaglass-web-v1.4.zip) · [All releases](https://github.com/nm621532-byte/instagram-clone-techbroz/releases)
 
 > ⚠️ **Disclaimer:** Educational project by **Tech Bro Z**, not affiliated with Instagram/Meta. Name, logo and design are original.
 > (The repo name stays `instagram-clone-techbroz`; the app was called InstaGlass in v1.0 and is **Private Insta** from v1.1.)
 
 <p>
-<img src="docs/screenshots/v11_02_settings.jpg" width="200"> <img src="docs/screenshots/v11_09_private_profile.jpg" width="200"> <img src="docs/screenshots/v11_03_messages.jpg" width="200"> <img src="docs/screenshots/v11_07_edit_profile.jpg" width="200">
+<img src="docs/screenshots/v14_upload.jpg" width="200"> <img src="docs/screenshots/v14_reel_actions.jpg" width="200"> <img src="docs/screenshots/v14_share_sheet.jpg" width="200"> <img src="docs/screenshots/v14_classic.jpg" width="200">
 </p>
 
-## 🆕 v1.3 — Anime reels import 🎬 (Hinglish)
+## 🆕 v1.4 — Naya upload, Classic mode, fresh Reels ✨ (Hinglish)
+- **Home ya Reels pe dobara tap** karo → upar scroll + bilkul naya feed (nayi order). Reels tab har baar kholne pe **poori nayi shuffle** — pehli reel bhi alag, neeche wali bhi alag; jo reels dekh li hain woh peeche chali jaati hain, ek session mein koi reel repeat nahi.
+- **Home feed pe reel tap** → full-screen Reels usi reel se shuru, swipe karo aur reels aayengi; Back dabao → Home wahi scroll position pe.
+- **Classic mode** (Settings → Customise): ek tap mein flat purana Instagram look — no glass, no blur, no glow. Light + dark dono mein, aapke account pe save hota hai. Default abhi bhi Liquid Glass.
+- **Naya upload screen** (Post / Reel / Story): upar right mein **Share** button + neeche Save draft / Share bar (bottom nav upload pe chhup jaata hai, ab Share kabhi nahi chhupega).
+  - Cover frame chuno, trim, speed 0.5x–2x, 11 filters, rangeen text (drag karke kahin bhi rakho), 6 royalty-free music tracks ya original sound / mute.
+  - Caption mein #hashtag aur @mention suggestions, logon ko tag karo, location likho.
+  - Like count chhupao, comments band karo, audience: Everyone / Followers / Close Friends.
+  - **Draft save** karo aur baad mein kholo; upload pe progress bar.
+- Reel ka share sheet (WhatsApp / Facebook / Copy link) ab poora dikhta hai; like/comment/share buttons caption ke upar.
+
+## v1.3 — Anime reels import 🎬 (Hinglish)
 Ab app mein **hazaaron anime edit reels** hain! Reels tab (neeche 🎬 icon) kholo, upar-neeche swipe karo.
 - Har reel ek alag "anime page" (bot account) ki hai, caption ke saath, 20–800 likes aur kuch comments ke saath; pichle ~30 din mein post hui dikhti hain.
 - Home feed, Explore aur Reels sab **pages mein load** hote hain (neeche scroll karo, aur aate jaate hain) — hazaaron reels ke saath bhi fast.
@@ -78,6 +89,13 @@ A full, working Instagram-style social app with an original **liquid glass** des
 - 💌 Real-time DMs (Server-Sent Events): text, photos, shared posts, typing, Seen, unsend, **message requests**
 - 🔔 Notifications · 🔎 explore + search · 👤 profiles with website, pronouns and accent colour
 
+### v1.4 — upload editor, Classic mode, fresh feeds
+- Re-tap Home / Reels: scroll to top + a new seeded order (`/api/feed|reels?seed=&offset=`; followed posts from the last 3 days stay first on Home). Every Reels open gets a new seed; reels you already watched (tracked per user, newest 3,000) go after unseen ones; the order is fixed for the session so paging never repeats.
+- Tapping a video on Home opens Reels at that reel (`#/reels/<id>`, `start=<id>` server-side, only if you may see it); Back returns to Home at the same scroll position.
+- Classic mode: per-user setting `classic` (`PUT /api/settings`), applied instantly, works with light and dark themes.
+- Upload editor: Post / Reel / Story, cover frame, trim, speed (0.5–2x), 11 filters, draggable text overlay (4 styles, 8 colours), 6 built-in royalty-free music tracks (`/api/music`, `public/music/*.m4a`, made for this app) with original sound on/off and volume, #hashtag (`/api/hashtags`) and @mention suggestions, tag people, location, audience (everyone / followers / close friends), hide like count, comments off, drafts (`/api/drafts`, owner-only, 20 max), XHR upload progress. Photos get filter + text baked on the phone; videos keep the original file plus a validated `edit` description that the player applies.
+- Server validates every field (filters, speeds, trim ≥ 0.5 s, music ids, colours, tags = real visible users, ≤ 20), audience is enforced on post, feed, explore, reels, profile grid, comments, likes, shared posts and the media files themselves.
+
 ### Reels importer (v1.3)
 - **Server side, admin only.** Reel videos are imported from an import folder (`IMPORT_DIR`, default `DATA_DIR/reel-inbox`) that holds `NNNN.mp4` files, optional `NNNN.jpg` posters and a `manifest.json` (`[{file,title,duration,source_name}]`). Files are hard-linked (no copy) into `DATA_DIR/reels/`, the mp4 signature is checked, and each file is imported once (tracked by file name; deleted reels stay deleted).
 - Each reel is owned by one of 240 generated "anime page" bot accounts, backdated over ~30 days, captioned from the manifest, with 20–800 bot likes (log-uniform), 4–20× views and 0–5 bot comments.
@@ -110,7 +128,7 @@ Admin follower/like/comment boosts create **bot accounts** (flag `isBot`, no pas
 - Private accounts, blocks, Close Friends and hidden stories are checked on every read **and** on the media file URLs.
 - DMs are addressed as "me + other user"; DM photos are served only to the two people in that chat.
 - Uploads are checked by their real bytes and size; text is rendered as text + strict CSP; CSRF guard (`X-IG` header); no password hash in any response or data export.
-- `test/smoke.mjs` — **270 checks** (the 70 from v1.0 + privacy, follow requests, Close Friends, block, DM permissions, comments off, hidden words, password change, sessions, export, deactivate, "another user cannot change my settings", admin-only APIs, and v1.2 bot boosts: list fills with named bots, pagination, reset keeps real follows, bot likes/comments, bots cannot log in; v1.3 reels import: 3 sample reels, idempotent re-run, non-admin 403, path traversal blocked, Range 206, posters, feed/reels/explore pagination; `IG_DESTRUCTIVE=1` also tests "delete all imported"). Run it before every deploy:
+- `test/smoke.mjs` — **321 checks** (the 70 from v1.0 + privacy, follow requests, Close Friends, block, DM permissions, comments off, hidden words, password change, sessions, export, deactivate, "another user cannot change my settings", admin-only APIs, and v1.2 bot boosts: list fills with named bots, pagination, reset keeps real follows, bot likes/comments, bots cannot log in; v1.3 reels import: 3 sample reels, idempotent re-run, non-admin 403, path traversal blocked, Range 206, posters, feed/reels/explore pagination; `IG_DESTRUCTIVE=1` also tests "delete all imported"; v1.4: Classic mode per user, editor validation, drafts owner-only (404 for others, files private), audience followers/close friends on post/feed/profile/media, tag notifications, music/hashtags, fresh reels order with no repeats, deep link start=<id>). Run it before every deploy:
 ```bash
 node server.js &
 node test/smoke.mjs http://localhost:3000
@@ -136,11 +154,11 @@ release/         # SHA-256 of each signed APK
 .github/         # workflow that attaches the APK + ZIP to each release
 ```
 
-### Download (Release v1.3)
-- Android APK: https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.3/InstaGlass-v1.3.apk (mirror: https://instaglass-live.sites.tab.bot/InstaGlass-v1.3.apk) — installs over v1.2 / v1.1 / v1.0 (same signature, versionCode 4)
-- Web app ZIP: https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.3/instaglass-web-v1.3.zip
-- APK SHA-256: `bdaac43a4ba29688902156bbd4d780156672023cf72ebf99d4342a7c07359e5b`
-- Older: [v1.1](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/tag/v1.1) · [v1.0](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/tag/v1.0)
+### Download (Release v1.4)
+- Android APK: https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.4/InstaGlass-v1.4.apk (mirror: https://instaglass-live.sites.tab.bot/InstaGlass-v1.4.apk) — installs over v1.3 / v1.2 / v1.1 / v1.0 (same signature, versionCode 5)
+- Web app ZIP: https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.4/instaglass-web-v1.4.zip
+- APK SHA-256: `06bb91d4d218779a1033b7bd741b657866153e043b40963041b29a8706b934df`
+- Older: [v1.3](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/tag/v1.3) · [v1.2](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/tag/v1.2) · [v1.1](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/tag/v1.1) · [v1.0](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/tag/v1.0)
 
 ---
 Made by **Tech Bro Z** — YouTube [@techbrozdeveloper](https://www.youtube.com/@techbrozdeveloper) · Instagram [@tech_bro_z_1](https://www.instagram.com/tech_bro_z_1/)

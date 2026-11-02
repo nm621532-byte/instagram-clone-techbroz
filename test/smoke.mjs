@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Private Insta (InstaGlass) smoke + security test, v1.3 (v1.2 + bulk reels import). Run before EVERY publish:
+// Private Insta (InstaGlass) smoke + security test, v1.4 (v1.3 + classic mode, upload editor, drafts, audience, fresh feed). Run before EVERY publish:
 //   node test/smoke.mjs http://localhost:3000        (or the live URL)
 // Creates throwaway users (random names), exercises every feature, then tries IDOR / auth attacks that MUST fail.
 const BASE = (process.argv[2] || 'http://localhost:3000').replace(/\/$/, '');
@@ -432,6 +432,102 @@ async function waitFor(fn, ms = 6000) { const t = Date.now(); while (Date.now() 
   } else console.log('  (admin positive checks skipped: set IG_ADMIN_USER / IG_ADMIN_PASS)');
   await A.put('/api/settings', { private: false, notif: { likes: true } });
   for (const [cl] of [[D], [E]]) await cl.req('DELETE', '/api/me', { password: pw });
+
+
+  console.log('— v1.4 classic mode, richer upload (cover, trim, speed, filter, text, music, tags, location, audience), drafts, fresh feed');
+  {
+    const P = new Client('p'), Q = new Client('q'), R = new Client('r'), S = new Client('s');
+    const up = 'tp_' + rnd, uq = 'tq_' + rnd, ur = 'tr_' + rnd, us = 'ts_' + rnd;
+    for (const [cl, n] of [[P, up], [Q, uq], [R, ur], [S, us]]) await cl.post('/api/signup', { username: n, password: pw, name: 'V14 ' + n });
+    // classic mode is a per-user server-side setting
+    const cs = await P.put('/api/settings', { classic: true });
+    ok(cs.status === 200 && cs.data.settings.classic === true && (await P.get('/api/me')).data.user.settings.classic === true, 'Classic mode saves on the server (per user)');
+    ok((await Q.get('/api/me')).data.user.settings.classic === false, "Classic mode of one user doesn't change another user");
+    ok((await P.put('/api/settings', { classic: 'yes' })).status === 400, 'Classic mode must be true/false');
+    ok((await new Client('anon').put('/api/settings', { classic: true })).status === 401, 'Classic mode needs login');
+    ok((await P.put('/api/settings', { classic: false })).data.settings.classic === false, 'Classic mode switches back to Liquid Glass');
+    // built-in music
+    const mu = await P.get('/api/music');
+    ok(mu.status === 200 && mu.data.tracks.length >= 6 && mu.data.filters.includes('clarendon'), 'music library + filter list');
+    const mr = await fetch(BASE + mu.data.tracks[0].file, { headers: { Range: 'bytes=0-99' } });
+    ok((mr.status === 206 || mr.status === 200) && /audio/.test(mr.headers.get('content-type') || ''), 'music track streams (audio)');
+    // a reel with every editor option
+    const MP4 = 'data:video/mp4;base64,' + SAMPLE_MP4.toString('base64'), COVER = 'data:image/jpeg;base64,' + SAMPLE_JPG.toString('base64');
+    await Q.post('/api/users/' + up + '/follow'); await R.post('/api/users/' + up + '/follow');
+    const edit = { filter: 'clarendon', speed: 1.5, trim: [0, 1], text: { t: 'Hello 👋', color: '#ff3b6b', x: 30, y: 40, size: 30, style: 'neon' }, music: { id: 'desi-beat', vol: 0.5 }, orig: false };
+    const rl = await P.post('/api/posts', { kind: 'reel', media: MP4, cover: COVER, caption: 'My reel #v14test' + rnd + ' @' + uq, edit, tags: [uq], location: 'Mumbai, India' });
+    const rp = rl.data && rl.data.post;
+    ok(rl.status === 201 && rp.type === 'video' && rp.isReel && rp.edit.speed === 1.5 && rp.edit.filter === 'clarendon' && rp.edit.trim[1] === 1 && rp.edit.music.id === 'desi-beat' && rp.edit.orig === false && rp.edit.text.t === 'Hello 👋', 'reel posted with trim, speed, filter, text, music, original sound off');
+    ok(rp && rp.tags[0] === uq && rp.location === 'Mumbai, India' && /^\/media\//.test(rp.poster || ''), 'reel has tagged people, location and its chosen cover');
+    ok((await Q.get(rp.poster)).status === 200 && (await S.get(rp.poster)).status === 200, 'cover of a public reel loads for viewers');
+    ok((await Q.get('/api/notifications')).data.notifications.some(n => n.type === 'tag' && n.post && n.post.id === rp.id), 'tagged person gets a "tagged you" notification');
+    for (const [bad, why] of [[{ edit: { filter: 'xyz' } }, 'unknown filter'], [{ edit: { speed: 3 } }, 'speed outside 0.5x–2x'], [{ edit: { music: { id: 'nope' } } }, 'unknown music track'], [{ edit: { trim: [2, 2.1] } }, 'trim shorter than 0.5 s'], [{ tags: ['no_such_user_' + rnd] }, 'tagging a missing user'], [{ visibility: 'secret' }, 'unknown audience']])
+      ok((await P.post('/api/posts', Object.assign({ media: MP4 }, bad))).status === 400, 'rejected: ' + why);
+    ok((await P.post('/api/posts', { kind: 'reel', media: JPG })).status === 400, 'a reel must be a video');
+    const nul = await P.post('/api/posts', { kind: 'reel', media: MP4, edit: { filter: 'normal', speed: 1, trim: null, text: null, music: null, orig: true } });
+    ok(nul.status === 201 && (await P.del('/api/posts/' + nul.data.post.id)).status === 200, 'editor defaults (no trim / text / music) are accepted');
+    ok((await P.post('/api/posts', { media: MP4, cover: FAKE })).status === 415, 'a fake cover image is refused');
+    // audience: followers-only and Close Friends posts are enforced on the server
+    const fo = (await P.post('/api/posts', { media: JPG, caption: 'followers only', visibility: 'followers' })).data.post;
+    await P.post('/api/close-friends/' + ur);
+    const cf = (await P.post('/api/posts', { media: JPG, caption: 'close friends only', visibility: 'close' })).data.post;
+    ok(fo.vis === 'followers' && cf.vis === 'close', 'posts saved with their audience');
+    ok((await Q.get('/api/posts/' + fo.id)).status === 200 && (await S.get('/api/posts/' + fo.id)).status === 404, 'followers-only post: follower sees it, stranger gets 404');
+    ok((await R.get('/api/posts/' + cf.id)).status === 200 && (await Q.get('/api/posts/' + cf.id)).status === 404 && (await S.get('/api/posts/' + cf.id)).status === 404, 'Close Friends post: only the Close Friend sees it');
+    ok((await S.get(fo.media)).status !== 200 && (await Q.get(cf.media)).status !== 200, 'hidden posts\' photo files are refused too (no IDOR)');
+    ok((await S.get('/api/posts/' + cf.id + '/comments')).status === 404 && (await S.post('/api/posts/' + cf.id + '/like')).status === 404, 'cannot like/comment-read a post you are not allowed to see');
+    const sgrid = (await S.get('/api/users/' + up)).data.posts.map(x => x.id), qgrid = (await Q.get('/api/users/' + up)).data.posts.map(x => x.id), pgrid = (await P.get('/api/users/' + up)).data.posts.map(x => x.id);
+    ok(!sgrid.includes(fo.id) && !sgrid.includes(cf.id) && qgrid.includes(fo.id) && !qgrid.includes(cf.id) && pgrid.includes(cf.id) && pgrid.includes(fo.id), 'profile grid shows each viewer only what they may see');
+    const sfeed = (await S.get('/api/explore?limit=30')).data.posts.map(x => x.id), qfeed = (await Q.get('/api/feed?limit=30')).data.posts.map(x => x.id);
+    ok(!sfeed.includes(fo.id) && !sfeed.includes(cf.id) && qfeed.includes(fo.id) && !qfeed.includes(cf.id), 'feed / explore respect the audience');
+    for (let i = 0; i < 4; i++) await P.post('/api/posts', { kind: 'reel', media: MP4, caption: 'extra reel ' + i });
+    // fresh feed (tap Home / Reels again): seeded shuffle with offset pages
+    const r1 = (await Q.get('/api/reels?limit=3&seed=aa' + rnd)).data, r1b = (await Q.get('/api/reels?limit=3&seed=aa' + rnd)).data;
+    ok(r1.seed && typeof r1.next === 'number' && JSON.stringify(r1.posts.map(x => x.id)) === JSON.stringify(r1b.posts.map(x => x.id)), 'seeded reels: same seed = same order (stable paging)');
+    const pg2 = (await Q.get('/api/reels?limit=3&seed=aa' + rnd + '&offset=' + r1.next)).data;
+    ok(!pg2.posts.some(x => r1.posts.some(y => y.id === x.id)), 'seeded reels: next page has no repeats');
+    // every Reels open starts somewhere new: a watched reel drops behind unseen ones, and #/reels/<id> starts AT that reel
+    const t0a = Date.now() - 1000, o1 = (await Q.get('/api/reels?limit=3&seed=o1' + rnd + '&t0=' + t0a)).data.posts;
+    ok(o1.length >= 2, 'reels feed has reels to shuffle');
+    await Q.post('/api/posts/' + o1[0].id + '/view'); await new Promise(r => setTimeout(r, 30));
+    const o2 = (await Q.get('/api/reels?limit=3&seed=o2' + rnd + '&t0=' + Date.now())).data.posts;
+    ok(o2.length && o2[0].id !== o1[0].id, 'two Reels opens start with different reels (watched one goes back)');
+    const w1 = (await Q.get('/api/reels?limit=10&seed=w1' + rnd + '&t0=' + Date.now())).data.posts.map(x => x.id), w2 = (await Q.get('/api/reels?limit=10&seed=w2' + rnd + '&t0=' + Date.now())).data.posts.map(x => x.id);
+    const same = w1.filter((x, i) => w2[i] === x).length;
+    ok(w1.length >= 5 && same <= 3 && JSON.stringify(w1) !== JSON.stringify(w2), 'two Reels opens give a different whole order, not just a different first reel (' + same + '/' + w1.length + ' same spots)');
+    const all = []; let off = 0; for (let i = 0; i < 4; i++) { const pg = (await Q.get('/api/reels?limit=5&seed=w3' + rnd + '&t0=1&offset=' + off)).data; all.push(...pg.posts.map(x => x.id)); off = pg.next; if (!pg.more) break; }
+    ok(new Set(all).size === all.length, 'no reel repeats while paging one session (' + all.length + ' reels)');
+    const target = pg2.posts[0] || o1[1];
+    const st1 = (await Q.get('/api/reels?limit=3&seed=s1' + rnd + '&start=' + target.id)).data;
+    ok(st1.posts[0].id === target.id, 'deep link /reels/<id> starts with that reel');
+    const st2 = (await Q.get('/api/reels?limit=3&seed=s1' + rnd + '&start=' + target.id + '&offset=' + st1.next)).data;
+    ok(!st2.posts.some(x => x.id === target.id), '…and that reel is not repeated on the next page');
+    ok((await S.get('/api/reels?limit=3&seed=s1' + rnd + '&start=' + cf.id)).data.posts.every(x => x.id !== cf.id), 'start=<id> cannot reveal a post you may not see');
+    const fd = (await Q.get('/api/feed?limit=5&seed=zz' + rnd)).data;
+    ok(fd.posts.length > 0 && fd.posts[0].user.username === up, 'fresh home feed keeps new posts from people you follow on top');
+    // hashtags
+    const ht = await Q.get('/api/hashtags?q=v14test');
+    ok(ht.status === 200 && ht.data.tags.some(x => x.tag === 'v14test' + rnd), '#hashtag suggestions come from public captions');
+    // drafts: private to their owner
+    const dr = await P.post('/api/drafts', { kind: 'reel', media: MP4, cover: COVER, caption: 'draft caption', edit: { speed: 2, filter: 'moon' }, visibility: 'followers', location: 'Delhi' });
+    const did = dr.data && dr.data.draft && dr.data.draft.id;
+    ok(dr.status === 201 && dr.data.draft.kind === 'reel' && dr.data.draft.edit.speed === 2 && dr.data.draft.vis === 'followers', 'save a reel as a draft');
+    ok((await P.get('/api/drafts')).data.drafts.some(d => d.id === did), 'drafts list shows it to the owner');
+    ok(!(await Q.get('/api/drafts')).data.drafts.some(d => d.id === did), "another user's drafts list doesn't show it");
+    ok((await Q.get('/api/drafts/' + did)).status === 404 && (await Q.put('/api/drafts/' + did, { caption: 'hacked' })).status === 404 && (await Q.del('/api/drafts/' + did)).status === 404, "another user can't read, edit or delete the draft (404)");
+    ok((await Q.get(dr.data.draft.media)).status !== 200 && (await S.get(dr.data.draft.cover)).status !== 200, "draft video + cover files are private");
+    ok((await Q.post('/api/posts', { draftId: did })).status === 404, "another user can't publish someone's draft");
+    ok((await new Client('anon').get('/api/drafts')).status === 401, 'drafts need login');
+    ok((await P.put('/api/drafts/' + did, { caption: 'final caption #v14' })).data.draft.caption === 'final caption #v14', 'owner edits the draft');
+    const pub = await P.post('/api/posts', { draftId: did, kind: 'reel', caption: 'final caption #v14', visibility: 'everyone', edit: { speed: 2, filter: 'moon' } });
+    ok(pub.status === 201 && pub.data.post.type === 'video' && pub.data.post.edit.speed === 2 && /^\/media\//.test(pub.data.post.poster || ''), 'publish the draft as a reel (no re-upload)');
+    ok((await P.get('/api/drafts/' + did)).status === 404, 'a published draft leaves the drafts list');
+    ok((await S.get(pub.data.post.media)).status === 200, 'published reel video is now visible');
+    ok((await P.del('/api/posts/' + rp.id)).status === 200 && (await Q.get(rp.poster)).status !== 200, 'deleting a reel removes its cover too');
+    const d2 = (await P.post('/api/drafts', { media: JPG, caption: 'x' })).data.draft;
+    for (const [cl, n] of [[P, up], [Q, uq], [R, ur], [S, us]]) await cl.req('DELETE', '/api/me', { password: pw });
+    ok((await new Client('x').get(d2.media)).status !== 200, 'deleting the account removes its drafts');
+  }
 
   console.log('— cleanup');
   ok((await Bc.del('/api/messages/' + share.data.message.id)).status === 200, 'B unsends own message');

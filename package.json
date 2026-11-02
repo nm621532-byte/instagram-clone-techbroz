@@ -1,6 +1,6 @@
 {
   "name": "instaglass",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Private Insta (InstaGlass) — liquid glass Instagram-style social app: private accounts, follow requests, Close Friends, block/restrict/mute, message requests, posts, stories, reels, real-time DMs, admin bot boosts, bulk reels import. Zero-dependency Node.js. Educational project by Tech Bro Z.",
   "main": "server.js",
   "scripts": {

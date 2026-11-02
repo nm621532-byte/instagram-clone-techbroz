@@ -39,6 +39,17 @@ const ICONS = {
   bell: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/></svg>',
   user: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>',
   edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9l-4-4L4 16z"/></svg>',
+  music: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/></svg>',
+  pin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg>',
+  tag: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/><path d="M19 3v4M17 5h4"/></svg>',
+  text: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 6V4h14v2M12 4v16M9 20h6"/></svg>',
+  filter: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="9" r="5.5"/><circle cx="15" cy="9" r="5.5"/><circle cx="12" cy="15" r="5.5"/></svg>',
+  scissors: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.1 15.9M14.5 14.5 20 20M8.1 8.1 12 12"/></svg>',
+  speed: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 21a9 9 0 1 1 9-9"/><path d="m12 12 4-4"/><circle cx="12" cy="12" r="1.2" fill="currentColor"/></svg>',
+  cover: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="3"/><path d="m4 16 5-5 4 4 2-2 5 5"/></svg>',
+  wa: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.5a9.5 9.5 0 0 0-8.2 14.3L2.5 21.5l4.8-1.3A9.5 9.5 0 1 0 12 2.5zm0 17.3a7.8 7.8 0 0 1-4-1.1l-.3-.2-2.8.8.8-2.7-.2-.3A7.8 7.8 0 1 1 12 19.8zm4.3-5.8c-.2-.1-1.4-.7-1.6-.8s-.4-.1-.5.1-.6.8-.7.9-.3.2-.5.1a6.4 6.4 0 0 1-3.2-2.8c-.2-.4.2-.4.7-1.3a.4.4 0 0 0 0-.4l-.7-1.7c-.2-.5-.4-.4-.5-.4h-.5a.9.9 0 0 0-.7.3 2.8 2.8 0 0 0-.9 2.1 4.9 4.9 0 0 0 1 2.6 11.2 11.2 0 0 0 4.3 3.8c1.6.7 2.2.8 3 .6a2.6 2.6 0 0 0 1.7-1.2 2.1 2.1 0 0 0 .1-1.2c0-.1-.2-.2-.4-.3z"/></svg>',
+  fb: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M13.5 21v-7.5H16l.4-3h-2.9V8.6c0-.9.3-1.5 1.5-1.5h1.6V4.4a21 21 0 0 0-2.3-.1c-2.3 0-3.8 1.4-3.8 3.9v2.3H8v3h2.5V21z"/></svg>',
+  draft: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4M9 13h6M9 17h4" stroke-linecap="round"/></svg>',
 };
 const icon = (n) => { const s = document.createElement('span'); s.style.display = 'contents'; s.innerHTML = ICONS[n]; return s; };
 function h(tag, attrs, ...kids) {
@@ -116,11 +127,19 @@ function applyTheme(t) {
   t = t || localStorage.getItem('ig_theme') || 'auto'; localStorage.setItem('ig_theme', t);
   const light = t === 'light' || (t === 'auto' && mq && mq.matches);
   document.documentElement.classList.toggle('light', !!light);
+  if (document.documentElement.classList.contains('classic')) applyClassic(true);
 }
+function applyClassic(on) { // v1.4 Classic mode: flat Instagram look (no glass/blur/glow); remembered on this phone + saved on the server
+  if (on === undefined) on = localStorage.getItem('ig_classic') === '1';
+  localStorage.setItem('ig_classic', on ? '1' : '0');
+  document.documentElement.classList.toggle('classic', !!on);
+  const tc = document.querySelector('meta[name=theme-color]'); if (tc) tc.content = on ? (document.documentElement.classList.contains('light') ? '#ffffff' : '#000000') : '#0b0b1a';
+}
+applyClassic();
 function applyAccent(c) { if (c) document.documentElement.style.setProperty('--accent', c); else document.documentElement.style.removeProperty('--accent'); }
 applyTheme(); if (mq && mq.addEventListener) mq.addEventListener('change', () => applyTheme());
 async function refreshMe() {
-  try { const d = await GET('/api/me'); state.me = d.user; state.unreadDm = d.unreadDm; state.unreadNotif = d.unreadNotif; state.msgRequests = d.msgRequests || 0; state.followRequests = d.followRequests || 0; state.version = d.version; applyTheme(d.user.settings && d.user.settings.theme); applyAccent(d.user.accent); updateBadges(); return true; }
+  try { const d = await GET('/api/me'); state.me = d.user; state.unreadDm = d.unreadDm; state.unreadNotif = d.unreadNotif; state.msgRequests = d.msgRequests || 0; state.followRequests = d.followRequests || 0; state.version = d.version; applyTheme(d.user.settings && d.user.settings.theme); applyClassic(!!(d.user.settings && d.user.settings.classic)); applyAccent(d.user.accent); updateBadges(); return true; }
   catch (e) { return false; }
 }
 function updateBadges() {
@@ -188,6 +207,8 @@ function tabbar(active) {
     else if (k === 'profile') inner = avatar(me);
     else inner = h('span', { style: 'display:contents', html: svg });
     const a = h('a', { class: 'tab' + (active === k ? ' on' : ''), href, 'aria-label': k, 'data-k': k }, inner);
+    // v1.4: tapping Home / Reels again (while already there) jumps to the top and loads a fresh feed, like Instagram
+    if (k === 'home' || k === 'reels') a.addEventListener('click', (e) => { if (active === k && ((location.hash || '#/') === href || (href === '#/' && location.hash === '#'))) { e.preventDefault(); freshTab(k); } });
     bar.append(a);
   });
   requestAnimationFrame(() => {
@@ -199,6 +220,14 @@ function tabbar(active) {
     requestAnimationFrame(() => { lens.style.left = target + 'px'; sessionStorage.setItem('lensX', target); });
   });
   return bar;
+}
+state.seeds = { home: Math.random().toString(36).slice(2, 10), reels: Math.random().toString(36).slice(2, 10) };
+function freshTab(k) {
+  vib(12);
+  state.seeds[k] = Math.random().toString(36).slice(2, 10);
+  const top = () => { const r = document.querySelector('.reels'); if (r) r.scrollTo({ top: 0 }); window.scrollTo({ top: 0, behavior: 'smooth' }); };
+  top(); state.freshPulse = k;
+  setTimeout(render, window.scrollY > 40 ? 260 : 0);
 }
 function topbar(title, opts) {
   opts = opts || {};
@@ -269,6 +298,43 @@ function openLikes(p) {
 }
 
 // ------------------------------------------------------------------ post card
+
+// ------------------------------------------------------------------ v1.4 edits (filters, speed, trim, text, music) — applied by the player, never baked into videos
+const FILTERS = {
+  normal: '', clarendon: 'contrast(1.2) saturate(1.35)', gingham: 'brightness(1.05) hue-rotate(-10deg) sepia(.1)', moon: 'grayscale(1) contrast(1.1) brightness(1.1)',
+  lark: 'contrast(.9) brightness(1.1) saturate(1.2)', reyes: 'sepia(.22) brightness(1.1) contrast(.85) saturate(.75)', juno: 'saturate(1.6) contrast(1.1) hue-rotate(-8deg)',
+  slumber: 'saturate(.66) brightness(1.05) sepia(.2)', crema: 'sepia(.35) contrast(.95) brightness(1.05) saturate(.9)', ludwig: 'saturate(1.25) contrast(1.05) brightness(1.05) sepia(.08)', aden: 'hue-rotate(-20deg) contrast(.9) saturate(.85) brightness(1.2)',
+};
+const FILTER_NAMES = Object.keys(FILTERS);
+const TEXT_STYLES = { classic: 'font-weight:600', bold: 'font-weight:900;text-transform:uppercase;letter-spacing:.5px', neon: 'font-weight:800', box: 'font-weight:800;padding:.15em .45em;border-radius:.3em' };
+function textOverlay(t, wrap) {
+  const el = h('div', { class: 'txt-ov ' + (t.style || 'bold') });
+  el.textContent = t.t;
+  el.style.cssText = TEXT_STYLES[t.style || 'bold'] + ';left:' + t.x + '%;top:' + t.y + '%;color:' + t.color + (t.style === 'neon' ? ';text-shadow:0 0 6px ' + t.color + ',0 0 18px ' + t.color : '') + (t.style === 'box' ? ';background:' + (t.color.toLowerCase() === '#ffffff' ? 'rgba(0,0,0,.6)' : '#fff') : '');
+  const fit = () => { el.style.fontSize = Math.max(10, t.size * (wrap.clientWidth || 360) / 360) + 'px'; };
+  fit(); if (window.ResizeObserver) new ResizeObserver(fit).observe(wrap);
+  return el;
+}
+// sound: "on" = the viewer wants sound. Original audio follows it unless the creator muted it; added music follows it too.
+function setSound(v, on) { v._soundOn = !!on; v.muted = !(on && v._orig !== false); if (v._music) v._music.muted = !on; }
+function applyEdits(v, wrap, e) {
+  if (!e) return;
+  if (e.filter && FILTERS[e.filter]) v.style.filter = FILTERS[e.filter];
+  if (e.text && wrap) wrap.append(textOverlay(e.text, wrap));
+  if (v.tagName !== 'VIDEO') return;
+  const a = e.trim ? e.trim[0] : 0, z = e.trim ? e.trim[1] : 0;
+  const rate = () => { if (e.speed) v.playbackRate = e.speed; };
+  v.addEventListener('loadedmetadata', () => { rate(); if (a && v.currentTime < a) v.currentTime = a; });
+  v.addEventListener('play', () => { rate(); if (e.trim && (v.currentTime < a || v.currentTime > z)) v.currentTime = a; if (v._music) { v._music.play().catch(() => {}); } });
+  v.addEventListener('pause', () => { if (v._music) v._music.pause(); });
+  if (e.trim) v.addEventListener('timeupdate', () => { if (v.currentTime >= z - 0.05 || v.currentTime < a - 0.3) { v.currentTime = a; if (v._music) v._music.currentTime = (e.music && e.music.start) || 0; } });
+  if (e.orig === false) { v._orig = false; v.muted = true; }
+  if (e.music) {
+    const m = h('audio', { src: e.music.file, loop: true, preload: 'none' }); m.volume = e.music.vol == null ? 0.8 : e.music.vol; m.muted = !v._soundOn; m.currentTime = e.music.start || 0;
+    v._music = m; (wrap || v.parentNode || document.body).append(m);
+    if (wrap) wrap.append(h('div', { class: 'music-tag' }, h('span', { style: 'display:contents', html: ICONS.music }), ' ' + e.music.title + ' · Private Insta Audio'));
+  }
+}
 function postCard(p, opts) {
   opts = opts || {};
   const likeBtn = h('button', { class: 'icon-btn' + (p.liked ? ' liked' : ''), 'aria-label': 'Like', html: p.liked ? ICONS.heartF : ICONS.heart });
@@ -298,37 +364,53 @@ function postCard(p, opts) {
   if (p.type === 'video') { mediaEl = h('video', { src: p.media, poster: p.poster, muted: true, loop: true, playsinline: true, preload: p.poster ? 'none' : 'metadata', class: 'tall' }); mediaEl.muted = true; onScreenPlay(mediaEl); }
   else mediaEl = h('img', { src: p.media, alt: p.caption.slice(0, 80), loading: 'lazy' });
   const media = h('div', { class: 'media' }, mediaEl);
+  applyEdits(mediaEl, media, p.edit);
+  if (p.tags && p.tags.length) media.append(h('button', { class: 'tag-pill', 'aria-label': 'Tagged people', onclick: (e) => { e.stopPropagation(); taggedSheet(p.tags); }, html: ICONS.tag }));
   let lastTap = 0;
   media.addEventListener('click', (e) => {
     const t = Date.now();
     if (t - lastTap < 320) {
       const b = h('div', { class: 'burst', html: ICONS.heartF }); media.append(b); setTimeout(() => b.remove(), 950);
       vib(15); setLike(true); lastTap = 0;
-    } else { lastTap = t; if (p.type === 'video') setTimeout(() => { if (lastTap === t) { mediaEl.muted = !mediaEl.muted; } }, 330); }
+    } else { lastTap = t; if (p.type === 'video') setTimeout(() => { if (lastTap === t) { if (opts.noReelJump) setSound(mediaEl, !mediaEl._soundOn); else go('#/reels/' + p.id); } }, 330); }
   });
-  const capEl = p.caption ? h('div', { class: 'cap' }, h('a', { href: '#/u/' + p.user.username }, unameEl(p.user)), ' ', p.caption) : null;
+  const capEl = p.caption ? h('div', { class: 'cap' }, h('a', { href: '#/u/' + p.user.username }, unameEl(p.user)), ' ', richText(p.caption)) : null;
+  const tagsEl = p.tags && p.tags.length ? h('div', { class: 'tagged' }, 'with ', ...p.tags.map((u, i) => [i ? ', ' : '', h('a', { href: '#/u/' + u }, h('b', null, u))])) : null;
   const previewEls = (p.preview || []).map(c => h('div', { class: 'cap' }, h('b', null, c.user.username), ' ', c.text));
   const card = h('article', { class: 'post glass' },
     h('div', { class: 'post-head' },
       ringed(p.user, 34, () => p.user.hasStory ? openStories([p.user.username]) : go('#/u/' + p.user.username)),
-      h('a', { class: 'meta', href: '#/u/' + p.user.username }, unameEl(p.user), h('small', null, p.type === 'video' ? 'Reel' : ago(p.created) + ' ago')),
+      h('a', { class: 'meta', href: '#/u/' + p.user.username }, unameEl(p.user), h('small', null, p.location ? ('📍 ' + p.location) : (p.type === 'video' ? 'Reel' : ago(p.created) + ' ago'), p.mine && p.vis === 'close' ? h('i', { class: 'vis-badge close' }, ' Close Friends') : p.mine && p.vis === 'followers' ? h('i', { class: 'vis-badge' }, ' Followers') : null)),
       h('button', { class: 'icon-btn', 'aria-label': 'More', html: ICONS.dots, onclick: () => postMenu(p, card) })),
     media,
     h('div', { class: 'actions' }, likeBtn,
       h('button', { class: 'icon-btn', 'aria-label': 'Comment', html: ICONS.comment, onclick: () => openComments(p, card) }),
       h('button', { class: 'icon-btn', 'aria-label': 'Share', html: ICONS.send, onclick: () => openShare(p) }),
       h('span', { class: 'sp' }), saveBtn),
-    h('div', { class: 'post-body' }, likesEl, p.views ? h('div', { class: 'views' }, h('span', { style: 'display:inline-flex;width:15px', html: ICONS.eye }), ' ' + fmt(p.views) + (p.views === 1 ? ' view' : ' views')) : null, capEl, ...previewEls,
+    h('div', { class: 'post-body' }, likesEl, p.views ? h('div', { class: 'views' }, h('span', { style: 'display:inline-flex;width:15px', html: ICONS.eye }), ' ' + fmt(p.views) + (p.views === 1 ? ' view' : ' views')) : null, capEl, tagsEl, ...previewEls,
       p.comments > (p.preview || []).length ? h('button', { class: 'more-c', onclick: () => openComments(p, card) }, 'View all ' + p.comments + ' comments') : null,
       h('div', { class: 'time' }, ago(p.created) + ' ago')));
   watchView(p, card);
   return card;
 }
+function richText(s) { // caption with tappable @mentions and highlighted #hashtags
+  const out = []; let last = 0;
+  for (const m of String(s || '').matchAll(/([@#])([\p{L}\p{N}._]{1,40})/gu)) {
+    if (m.index > last) out.push(s.slice(last, m.index));
+    out.push(m[1] === '@' ? h('a', { class: 'mention', href: '#/u/' + m[2].toLowerCase().replace(/\.+$/, '') }, m[0]) : h('span', { class: 'hashtag' }, m[0]));
+    last = m.index + m[0].length;
+  }
+  if (last < String(s || '').length) out.push(s.slice(last));
+  return out;
+}
+function taggedSheet(names) {
+  const s = sheet('Tagged in this post', h('div', { class: 'scroll list' }, ...names.map(u => h('a', { class: 'urow', href: '#/u/' + u, onclick: () => s.close() }, h('span', { class: 'sic', html: ICONS.user }), h('b', null, u)))));
+}
 const viewedPosts = new Set();
 // v1.3: feed videos autoplay (muted) only while at least 60% on screen; nothing is preloaded until it comes near
 const playIO = window.IntersectionObserver ? new IntersectionObserver((ents) => ents.forEach(en => {
   const v = en.target;
-  if (en.isIntersecting && en.intersectionRatio >= 0.6) { if (v.preload === 'none') v.preload = 'metadata'; v.muted = true; v.play().catch(() => {}); }
+  if (en.isIntersecting && en.intersectionRatio >= 0.6) { if (v.preload === 'none') v.preload = 'metadata'; setSound(v, false); v.play().catch(() => {}); }
   else if (!v.paused) v.pause();
 }), { threshold: [0, 0.6] }) : null;
 function onScreenPlay(v) { if (playIO) playIO.observe(v); else v.autoplay = true; }
@@ -411,10 +493,16 @@ async function openShare(p) {
   const search = h('input', { class: 'field', placeholder: 'Search people', style: 'height:42px;margin:4px 0 6px' });
   const note = h('input', { class: 'field', placeholder: 'Write a message…', style: 'height:42px;margin:0', maxlength: 500 });
   const link = location.origin + '/#/p/' + p.id;
-  const s = sheet('Share', h('div', { class: 'scroll' }, search, grid, note),
-    h('div', { class: 'share-actions' },
+  // v1.4: the outside-share buttons sit at the TOP of the sheet (always visible, never under the keyboard or the phone's nav bar)
+  const msg = (p.caption ? p.caption.slice(0, 80) + ' — ' : '') + link;
+  const ext = (url) => { const a = h('a', { href: url, target: '_blank', rel: 'noopener' }); document.body.append(a); a.click(); a.remove(); };
+  const s = sheet('Share',
+    h('div', { class: 'share-actions top' },
+      h('button', { onclick: () => ext('https://wa.me/?text=' + encodeURIComponent(msg)) }, h('span', { class: 'circ glass wa', html: ICONS.wa }), 'WhatsApp'),
+      h('button', { onclick: () => ext('https://www.facebook.com/sharer/sharer.php?u=' + encodeURIComponent(link)) }, h('span', { class: 'circ glass fb', html: ICONS.fb }), 'Facebook'),
       h('button', { onclick: () => copy(link) }, h('span', { class: 'circ glass', html: ICONS.link }), 'Copy link'),
-      navigator.share ? h('button', { onclick: () => navigator.share({ title: 'Private Insta post', text: p.caption.slice(0, 80), url: link }).catch(() => {}) }, h('span', { class: 'circ glass', html: ICONS.share }), 'Share to…') : null));
+      navigator.share ? h('button', { onclick: () => navigator.share({ title: 'Private Insta post', text: p.caption.slice(0, 80), url: link }).catch(() => {}) }, h('span', { class: 'circ glass', html: ICONS.share }), 'More…') : null),
+    h('div', { class: 'scroll' }, search, grid, note));
   let people = [];
   try {
     const [inbox, fol] = await Promise.all([GET('/api/inbox'), GET('/api/users/' + state.me.username + '/following')]);
@@ -542,6 +630,9 @@ async function openStories(queue) {
 
 // ------------------------------------------------------------------ home feed
 addRoute(/^#\/?$/, async () => {
+  // v1.4: coming back to Home (e.g. from a reel) shows the same feed at the same scroll position; tapping Home again makes it fresh
+  const hv0 = state.homeView;
+  if (hv0 && hv0.seed === state.seeds.home && Date.now() - hv0.at < 15 * 60 * 1000 && state.freshPulse !== 'home') { hv0.attach(); const y = hv0.y; requestAnimationFrame(() => window.scrollTo(0, y)); setTimeout(() => window.scrollTo(0, y), 60); return hv0.page; }
   const feed = h('div');
   const right = [
     h('a', { class: 'icon-btn', href: '#/notifications', 'aria-label': 'Notifications', style: 'position:relative' }, h('span', { style: 'display:contents', html: ICONS.heart }), h('i', { class: 'dot-badge', 'data-badge': 'notif', hidden: !state.unreadNotif })),
@@ -550,23 +641,26 @@ addRoute(/^#\/?$/, async () => {
   const page = pageWrap(topbar(h('h1', { class: 'logo' }, h('img', { src: '/icon.svg', alt: '' }), 'Private Insta'), { right }), h('main', { class: 'view' }, h('div', { class: 'stories-slot' }), feed));
   storiesRow().then(r => page.querySelector('.stories-slot').replaceWith(r));
   feed.append(spinner());
-  let before = 0, loading = false, more = true;
+  if (state.freshPulse === 'home') { state.freshPulse = null; page.querySelector('main').prepend(h('div', { class: 'fresh-pill' }, '✨ Fresh feed')); }
+  // v1.4: a "seed" gives a new mix every time Home is tapped again (your own + followed posts from the last days stay on top)
+  let offset = 0, loading = false, more = true; const seed = state.seeds.home;
   async function load() {
     if (loading || !more) return; loading = true;
     try {
-      const d = await GET('/api/feed?limit=8' + (before ? '&before=' + before : ''));
+      const d = await GET('/api/feed?limit=8&seed=' + seed + '&offset=' + offset);
       feed.querySelector('.spinner') && feed.querySelector('.spinner').remove();
-      if (!before && !d.posts.length) feed.append(await suggestions(true));
+      if (!offset && !d.posts.length) feed.append(await suggestions(true));
       d.posts.forEach(p => feed.append(postCard(p)));
-      if (d.posts.length) before = d.posts[d.posts.length - 1].created;
+      const had = offset; offset = d.next || (offset + d.posts.length);
       more = d.more;
-      if (!more && before) feed.append(h('div', { class: 'empty' }, "✨ You're all caught up"), await suggestions(false));
+      if (!more && had + d.posts.length) feed.append(h('div', { class: 'empty' }, "✨ You're all caught up"), await suggestions(false));
     } catch (e) { toast(e.message); }
     loading = false;
   }
   const onScroll = () => { if (window.innerHeight + window.scrollY > document.body.offsetHeight - 900) load(); };
-  window.addEventListener('scroll', onScroll, { passive: true });
-  state.cleanup = () => window.removeEventListener('scroll', onScroll);
+  const hv = { page, seed, y: 0, at: Date.now() };
+  hv.attach = () => { window.addEventListener('scroll', onScroll, { passive: true }); state.cleanup = () => { window.removeEventListener('scroll', onScroll); hv.y = window.scrollY; hv.at = Date.now(); page.querySelectorAll('video').forEach(v => v.pause()); }; };
+  state.homeView = hv; hv.attach();
   load();
   return page;
 }, { tab: 'home' });
@@ -641,27 +735,34 @@ addRoute(/^#\/p\/([a-f0-9]+)$/, async (id) => {
 }, { tab: '' });
 
 // ------------------------------------------------------------------ reels
-addRoute(/^#\/reels$/, async () => {
+addRoute(/^#\/reels(?:\/([a-f0-9]+))?$/, async (startId) => {
+  // v1.4: every open of Reels is a new shuffle (unseen reels first); #/reels/<id> starts AT that reel (tapped on Home)
+  const start = /^[a-f0-9]+$/.test(startId || '') ? startId : '';
+  state.seeds.reels = Math.random().toString(36).slice(2, 10);
+  const t0 = Date.now(), have = new Set();
+  const q = (off) => '/api/reels?limit=10&seed=' + state.seeds.reels + '&t0=' + t0 + (start ? '&start=' + start : '') + (off ? '&offset=' + off : '');
   // v1.3: thousands of reels — pages of 10 load as you scroll; only the reels near the screen keep a video source
   // (others are unloaded to save memory/data); a reel plays (muted until you tap 🔈) only while it fills the screen
   const wrap = h('div', { class: 'reels' });
-  let d; try { d = await GET('/api/reels?limit=10'); } catch (e) { toast(e.message); return null; }
-  let muted = true, before = 0, more = d.more, busy = false;
+  let d; try { d = await GET(q(0)); } catch (e) { toast(e.message); return null; }
+  let muted = true, offset = d.next || d.posts.length, more = d.more, busy = false;
   if (!d.posts.length) wrap.append(h('div', { class: 'empty', style: 'color:#fff;padding-top:40vh' }, 'No reels yet. Post a video with the + button!'));
   const reels = [];
-  const setSrc = (r, on) => { const v = r.v; if (on && !v.getAttribute('src')) { v.src = r.p.media; v.preload = 'metadata'; } else if (!on && v.getAttribute('src')) { v.pause(); v.removeAttribute('src'); v.load(); } };
+  const setSrc = (r, on) => { const v = r.v; if (on && !v.getAttribute('src')) { v.src = r.p.media; v.preload = 'metadata'; } else if (!on && v.getAttribute('src')) { v.pause(); v.removeAttribute('src'); v.load(); if (v._music) v._music.pause(); } };
   function windowAround(i) { reels.forEach((r, k) => setSrc(r, Math.abs(k - i) <= 2)); if (more && i >= reels.length - 4) loadMore(); }
   function addReel(p) {
-    const v = h('video', { loop: true, playsinline: true, preload: 'none', poster: p.poster }); v.muted = muted;
+    if (have.has(p.id)) return; have.add(p.id); // never the same reel twice in one session
+    const v = h('video', { loop: true, playsinline: true, preload: 'none', poster: p.poster }); setSound(v, !muted);
     const likeIco = h('span', { class: 'gl', html: p.liked ? ICONS.heartF : ICONS.heart, style: p.liked ? 'color:var(--heart)' : '' });
     const likeN = h('span', null, p.likes == null ? '' : fmt(p.likes));
-    const reel = h('section', { class: 'reel' }, v,
-      h('button', { class: 'mute', html: muted ? ICONS.mute : ICONS.vol, onclick: () => { muted = !muted; reels.forEach(x => x.v.muted = muted); document.querySelectorAll('.mute').forEach(m => m.innerHTML = muted ? ICONS.mute : ICONS.vol); } }),
+    const reel = h('section', { class: 'reel', 'data-id': p.id }, v,
+      h('button', { class: 'mute', html: muted ? ICONS.mute : ICONS.vol, onclick: () => { muted = !muted; reels.forEach(x => setSound(x.v, !muted)); document.querySelectorAll('.mute').forEach(m => m.innerHTML = muted ? ICONS.mute : ICONS.vol); } }),
       h('div', { class: 'side' },
         h('button', { onclick: async () => { p.liked = !p.liked; if (p.likes != null) p.likes += p.liked ? 1 : -1; likeIco.innerHTML = p.liked ? ICONS.heartF : ICONS.heart; likeIco.style.color = p.liked ? 'var(--heart)' : ''; likeN.textContent = p.likes == null ? '' : fmt(p.likes); vib(); try { p.liked ? await POST('/api/posts/' + p.id + '/like') : await DEL('/api/posts/' + p.id + '/like'); } catch (e) { toast(e.message); } } }, likeIco, likeN),
         h('button', { onclick: () => openComments(p) }, h('span', { class: 'gl', html: ICONS.comment }), h('span', null, fmt(p.comments))),
-        h('button', { onclick: () => openShare(p) }, h('span', { class: 'gl', html: ICONS.send }), h('span', null, 'Share'))),
-      h('div', { class: 'info' }, h('a', { class: 'who', href: '#/u/' + p.user.username }, avatar(p.user), unameEl(p.user)), h('div', { class: 'cap' }, p.caption), p.views ? h('small', { style: 'opacity:.85' }, '▶ ' + fmt(p.views) + ' views') : null));
+        h('button', { 'aria-label': 'Share', onclick: () => openShare(p) }, h('span', { class: 'gl', html: ICONS.send }), h('span', null, 'Share'))),
+      h('div', { class: 'info' }, h('a', { class: 'who', href: '#/u/' + p.user.username }, avatar(p.user), unameEl(p.user)), h('div', { class: 'cap', onclick: (e) => e.currentTarget.classList.toggle('open') }, richText(p.caption)), p.location ? h('small', { class: 'loc' }, '📍 ' + p.location) : null, p.tags && p.tags.length ? h('small', { class: 'loc', onclick: () => taggedSheet(p.tags) }, '👤 ' + p.tags.join(', ')) : null, p.views ? h('small', { style: 'opacity:.85' }, '▶ ' + fmt(p.views) + ' views') : null));
+    applyEdits(v, reel, p.edit);
     let lt = 0; v.addEventListener('click', () => { const t = Date.now(); if (t - lt < 320 && !p.liked) { reel.querySelector('.side button').click(); const b = h('div', { class: 'burst', html: ICONS.heartF }); reel.append(b); setTimeout(() => b.remove(), 950); } else if (v.paused) v.play(); else if (t - lt > 320) setTimeout(() => { if (Date.now() - t > 300 && lt === t) v.paused ? v.play() : v.pause(); }, 330); lt = t; });
     if (!p.mine) reel.dataset.pid = p.id;
     reel.dataset.i = reels.length; reels.push({ p, v, el: reel });
@@ -670,54 +771,308 @@ addRoute(/^#\/reels$/, async () => {
   const io = new IntersectionObserver((ents) => ents.forEach(en => {
     const r = reels[+en.target.dataset.i]; if (!r) return;
     if (en.isIntersecting && en.intersectionRatio > 0.6) {
-      windowAround(+en.target.dataset.i); r.v.muted = muted; r.v.play().catch(() => {});
+      windowAround(+en.target.dataset.i); setSound(r.v, !muted); r.v.play().catch(() => {});
       const pid = en.target.dataset.pid; if (pid && !viewedPosts.has(pid)) { viewedPosts.add(pid); POST('/api/posts/' + pid + '/view').catch(() => {}); }
     } else r.v.pause();
   }), { root: wrap, threshold: [0, 0.6, 1] });
   async function loadMore() {
     if (busy || !more) return; busy = true;
-    try { const n = await GET('/api/reels?limit=10&before=' + before); n.posts.forEach(addReel); if (n.posts.length) before = n.posts[n.posts.length - 1].created; more = n.more; } catch (e) { toast(e.message); }
+    try { const n = await GET(q(offset)); n.posts.forEach(addReel); offset = n.next || (offset + n.posts.length); more = n.more; } catch (e) { toast(e.message); }
     busy = false;
   }
-  d.posts.forEach(addReel); if (d.posts.length) before = d.posts[d.posts.length - 1].created;
+  d.posts.forEach(addReel);
   if (reels.length) windowAround(0);
-  state.cleanup = () => { io.disconnect(); reels.forEach(r => { r.v.pause(); r.v.removeAttribute('src'); }); };
-  return pageWrap(h('div', { class: 'reels-title' }, 'Reels'), wrap);
+  if (state.freshPulse === 'reels') { state.freshPulse = null; toast('✨ Fresh reels'); }
+  state.cleanup = () => { io.disconnect(); reels.forEach(r => { r.v.pause(); r.v.removeAttribute('src'); if (r.v._music) { r.v._music.pause(); r.v._music.removeAttribute('src'); } }); };
+  return pageWrap(h('div', { class: 'reels-title' }, start ? h('button', { class: 'reels-back', 'aria-label': 'Back', html: ICONS.back, onclick: () => history.length > 1 ? history.back() : go('#/') }) : null, 'Reels'), wrap);
 }, { tab: 'reels' });
 
-// ------------------------------------------------------------------ create post / story
-addRoute(/^#\/create$/, async () => {
-  let mode = 'post', media = null;
+// ------------------------------------------------------------------ create post / reel / story (v1.4 editor)
+function uploadJSON(url, body, onProgress) { // XHR (not fetch) so the upload shows a real progress bar
+  return new Promise((res, rej) => {
+    const x = new XMLHttpRequest(); x.open('POST', url); x.withCredentials = true;
+    x.setRequestHeader('Content-Type', 'application/json'); x.setRequestHeader('X-IG', '1');
+    if (x.upload && onProgress) x.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
+    x.onload = () => { let d = {}; try { d = JSON.parse(x.responseText); } catch (e) {} if (x.status >= 200 && x.status < 300) res(d); else rej(new Error(d.error || ('Error ' + x.status))); };
+    x.onerror = () => rej(new Error('Network problem — check your internet and try again'));
+    x.send(JSON.stringify(body));
+  });
+}
+function captureFrame(src, t, filter, maxW) { // a JPEG of the video frame at t seconds (used for the reel cover and filter thumbnails)
+  return new Promise((res, rej) => {
+    const v = h('video', { muted: true, playsinline: true, preload: 'auto' }); v.muted = true; v.src = src;
+    const done = () => { try {
+      const w = Math.min(maxW || 720, v.videoWidth || 720), s = w / (v.videoWidth || w), c = document.createElement('canvas');
+      c.width = Math.round(w); c.height = Math.round((v.videoHeight || w * 16 / 9) * s);
+      const ctx = c.getContext('2d'); if (filter) ctx.filter = filter; ctx.drawImage(v, 0, 0, c.width, c.height);
+      res(c.toDataURL('image/jpeg', 0.82)); } catch (e) { rej(e); } finally { v.removeAttribute('src'); v.load(); } };
+    v.onloadeddata = () => { const tt = Math.min(Math.max(0, t || 0), Math.max(0, (v.duration || 1) - 0.05)); if (Math.abs(v.currentTime - tt) < 0.01) done(); else v.currentTime = tt; };
+    v.onseeked = done; v.onerror = () => rej(new Error('Could not read the video'));
+    setTimeout(() => rej(new Error('Video frame timeout')), 15000);
+  });
+}
+function bakeImage(url, filter, text) { // photo + filter + text overlay -> one JPEG (done on the phone, before upload)
+  return new Promise((res, rej) => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, 1440 / Math.max(img.naturalWidth, img.naturalHeight)), c = document.createElement('canvas');
+      c.width = Math.round(img.naturalWidth * scale); c.height = Math.round(img.naturalHeight * scale);
+      const ctx = c.getContext('2d'); if (filter) ctx.filter = filter; ctx.drawImage(img, 0, 0, c.width, c.height); ctx.filter = 'none';
+      if (text && text.t) {
+        const fs = text.size * c.width / 360, x = text.x / 100 * c.width, y = text.y / 100 * c.height;
+        ctx.font = (text.style === 'classic' ? '600 ' : '900 ') + fs + 'px -apple-system,Segoe UI,Roboto,Arial,sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        const t = text.style === 'bold' ? text.t.toUpperCase() : text.t;
+        if (text.style === 'box') { const w = ctx.measureText(t).width + fs * 0.9; ctx.fillStyle = text.color.toLowerCase() === '#ffffff' ? 'rgba(0,0,0,.6)' : '#fff'; ctx.beginPath(); (ctx.roundRect ? ctx.roundRect(x - w / 2, y - fs * 0.7, w, fs * 1.4, fs * 0.3) : ctx.rect(x - w / 2, y - fs * 0.7, w, fs * 1.4)); ctx.fill(); }
+        if (text.style === 'neon') { ctx.shadowColor = text.color; ctx.shadowBlur = fs * 0.6; } else { ctx.shadowColor = 'rgba(0,0,0,.55)'; ctx.shadowBlur = fs * 0.15; }
+        ctx.fillStyle = text.color; ctx.fillText(t, x, y);
+      }
+      res(c.toDataURL('image/jpeg', 0.88));
+    };
+    img.onerror = () => rej(new Error('Could not read that image')); img.src = url;
+  });
+}
+const tfmt = (s) => { s = Math.max(0, s || 0); return Math.floor(s / 60) + ':' + String(Math.floor(s % 60)).padStart(2, '0') + '.' + Math.floor((s * 10) % 10); };
+const TEXT_COLORS = ['#ffffff', '#000000', '#ff3b6b', '#fbbf24', '#22c55e', '#22d3ee', '#8b5cf6', '#f97316'];
+function captionSuggest(ta, box) { // #hashtag and @mention suggestions while typing the caption
+  let seq = 0;
+  const run = async () => {
+    const pos = ta.selectionStart || ta.value.length, before = ta.value.slice(0, pos);
+    const m = /(^|\s)([@#])([\p{L}\p{N}._]{0,30})$/u.exec(before); const my = ++seq;
+    if (!m || (m[2] === '@' && !m[3])) { box.replaceChildren(); box.hidden = true; return; }
+    let items = [];
+    try {
+      if (m[2] === '@') { const d = await GET('/api/search?q=' + encodeURIComponent(m[3])); items = d.users.slice(0, 8).map(u => ({ ins: '@' + u.username, el: [avatar(u), h('b', null, u.username), h('small', null, u.name || '')] })); }
+      else { const d = await GET('/api/hashtags?q=' + encodeURIComponent(m[3])); items = d.tags.map(t => ({ ins: '#' + t.tag, el: [h('b', null, '#' + t.tag), h('small', null, fmt(t.posts) + ' posts')] })); if (m[3] && !items.find(i => i.ins === '#' + m[3].toLowerCase())) items.push({ ins: '#' + m[3], el: [h('b', null, '#' + m[3]), h('small', null, 'new tag')] }); }
+    } catch (e) { return; }
+    if (my !== seq) return;
+    box.hidden = !items.length;
+    box.replaceChildren(...items.map(it => h('button', { type: 'button', class: 'sug', onclick: () => {
+      const start = pos - m[2].length - m[3].length; ta.value = ta.value.slice(0, start) + it.ins + ' ' + ta.value.slice(pos);
+      const np = start + it.ins.length + 1; ta.focus(); ta.setSelectionRange(np, np); ta.dispatchEvent(new Event('input')); box.hidden = true;
+    } }, ...it.el)));
+  };
+  ta.addEventListener('input', run); ta.addEventListener('click', run);
+}
+function tagPeopleSheet(tags, onDone) {
+  const chosen = tags.slice();
+  const chips = h('div', { class: 'chips' }), list = h('div', { class: 'scroll list' });
+  const q = h('input', { class: 'field', placeholder: 'Search people to tag', style: 'height:42px;margin:4px 0 8px' });
+  const drawChips = () => chips.replaceChildren(...(chosen.length ? chosen.map(u => h('button', { type: 'button', class: 'chip on', onclick: () => { chosen.splice(chosen.indexOf(u), 1); drawChips(); search(); } }, '@' + u, ' ✕')) : [h('small', { class: 'muted' }, 'Nobody tagged yet')]));
+  let seq = 0;
+  async function search() {
+    const my = ++seq; let d; try { d = await GET('/api/search?q=' + encodeURIComponent(q.value.trim())); } catch (e) { return; } if (my !== seq) return;
+    list.replaceChildren(...d.users.filter(u => u.username !== state.me.username).slice(0, 20).map(u => h('button', { type: 'button', class: 'urow' + (chosen.includes(u.username) ? ' on' : ''), onclick: () => {
+      if (chosen.includes(u.username)) chosen.splice(chosen.indexOf(u.username), 1); else if (chosen.length < 20) chosen.push(u.username); else toast('Up to 20 people');
+      drawChips(); search();
+    } }, avatar(u), h('div', { class: 'st' }, h('b', null, u.username), h('small', null, u.name || '')), h('span', { class: 'gbtn sm' + (chosen.includes(u.username) ? '' : ' primary') }, chosen.includes(u.username) ? 'Tagged ✓' : 'Tag'))));
+  }
+  q.oninput = search;
+  const s = sheet('Tag people', h('div', { style: 'padding:0 14px' }, q, chips), list, h('div', { style: 'padding:8px 14px 0' }, h('button', { class: 'gbtn primary block', onclick: () => { onDone(chosen); s.close(); } }, 'Done')));
+  drawChips(); search();
+}
+async function draftsSheet(onOpen) {
+  const list = h('div', { class: 'scroll list' }, spinner());
+  const s = sheet('Drafts', list);
+  async function draw() {
+    let d; try { d = await GET('/api/drafts'); } catch (e) { toast(e.message); return; }
+    if (!d.drafts.length) { list.replaceChildren(h('div', { class: 'empty' }, 'No drafts yet. Use "Save draft" while making a post or reel.')); return; }
+    list.replaceChildren(...d.drafts.map(dr => h('div', { class: 'draft-row' },
+      h('button', { type: 'button', class: 'dthumb', onclick: () => { s.close(); onOpen(dr); } }, dr.cover || dr.type === 'image' ? h('img', { src: dr.cover || dr.media, alt: '', style: dr.edit && dr.edit.filter ? 'filter:' + FILTERS[dr.edit.filter] : '' }) : h('video', { src: dr.media + '#t=0.5', muted: true, preload: 'metadata', playsinline: true })),
+      h('button', { type: 'button', class: 'st', onclick: () => { s.close(); onOpen(dr); } }, h('b', null, (dr.kind === 'reel' ? '🎬 Reel' : '🖼️ Post') + ' draft'), h('small', null, (dr.caption || 'No caption').slice(0, 60)), h('small', null, 'Saved ' + ago(dr.updated) + ' ago')),
+      h('button', { class: 'icon-btn', 'aria-label': 'Delete draft', html: ICONS.trash, onclick: async () => { if (!confirm('Delete this draft?')) return; try { await DEL('/api/drafts/' + dr.id); toast('Draft deleted'); draw(); } catch (e) { toast(e.message); } } }))));
+  }
+  draw();
+}
+addRoute(/^#\/create(?:\/(post|reel|story))?$/, async (want) => {
+  let mode = ['post', 'reel', 'story'].includes(want) ? want : 'post', media = null, draftId = null, busy = false, dur = 0, tool = null, tracks = null;
+  const ed = { filter: 'normal', speed: 1, trim: null, text: null, music: null, orig: true, coverT: null };
+  const meta = { location: '', tags: [], vis: 'everyone', hideLikes: false, commentsOff: false, closeFriends: false };
   const seg = h('div', { class: 'seg glass' });
-  const body = h('div');
-  const caption = h('textarea', { class: 'field', placeholder: 'Write a caption…', maxlength: 2200 });
-  const shareBtn = h('button', { class: 'gbtn primary block' }, 'Share');
+  const draftsBtn = h('button', { class: 'gbtn sm drafts-btn', hidden: true, onclick: () => draftsSheet(openDraft) }, h('span', { style: 'display:contents', html: ICONS.draft }), 'Drafts');
   const area = h('div');
-  const opt = { commentsOff: false, hideLikes: false, closeFriends: false };
-  const optRow = (k, label, sub) => toggleRow(label, sub, opt[k], (v) => { opt[k] = v; });
-  function drawSeg() { seg.replaceChildren(...[['post', 'Post'], ['story', 'Story']].map(([k, l]) => h('button', { class: mode === k ? 'on' : '', onclick: () => { mode = k; drawSeg(); draw(); } }, l))); }
+  const caption = h('textarea', { class: 'field', placeholder: 'Write a caption… use #hashtags and @mentions', maxlength: 2200 });
+  const sugBox = h('div', { class: 'sug-box glass', hidden: true }); captionSuggest(caption, sugBox);
+  const shareTop = h('button', { class: 'top-share', onclick: () => share() }, 'Share');
+  const shareBtn = h('button', { class: 'gbtn primary', onclick: () => share() }, 'Share');
+  const draftBtn = h('button', { class: 'gbtn', onclick: () => saveDraft() }, 'Save draft');
+  const bar = h('div', { class: 'create-bar glass' }, draftBtn, shareBtn);
+  const prog = h('div', { class: 'upload-prog', hidden: true }, h('div', { class: 'box glass' }, h('b', null, 'Uploading…'), h('div', { class: 'track' }, h('i')), h('small', null, '0%')));
+  const setProg = (f, label) => { prog.hidden = false; prog.querySelector('i').style.width = Math.round(f * 100) + '%'; prog.querySelector('small').textContent = Math.round(f * 100) + '%'; if (label) prog.querySelector('b').textContent = label; };
+  let stage = null, mv = null, ov = null, prevAudio = null, thumbUrl = null;
+  const isVideo = () => media && media.kind === 'video';
+  const titleEl = h('h1', null, 'New post');
+  function drawSeg() { titleEl.textContent = 'New ' + mode; seg.replaceChildren(...[['post', 'Post'], ['reel', 'Reel'], ['story', 'Story']].map(([k, l]) => h('button', { class: mode === k ? 'on' : '', onclick: () => { if (k === 'reel' && media && media.kind !== 'video') { toast('A reel needs a video — choose one'); } mode = k; drawSeg(); draw(); } }, l))); }
+  GET('/api/drafts').then(d => { if (d.drafts.length) { draftsBtn.hidden = false; draftsBtn.lastChild.textContent = 'Drafts (' + d.drafts.length + ')'; } }).catch(() => {});
+  // ---- live preview: filter, speed, trim loop, text overlay, music
+  function applyPreview() {
+    if (!mv) return;
+    mv.style.filter = FILTERS[ed.filter] || '';
+    if (isVideo()) { mv.playbackRate = ed.speed; mv.muted = !ed.orig; if (prevAudio) prevAudio.volume = ed.music ? ed.music.vol : 0.8; }
+    if (ov) ov.remove(); ov = null;
+    if (ed.text && ed.text.t) { ov = textOverlay(ed.text, stage); ov.classList.add('drag'); stage.append(ov); makeDraggable(ov); }
+  }
+  function makeDraggable(el) {
+    let drag = false;
+    el.addEventListener('pointerdown', (e) => { drag = true; el.setPointerCapture(e.pointerId); e.preventDefault(); });
+    el.addEventListener('pointermove', (e) => { if (!drag) return; const r = stage.getBoundingClientRect(); ed.text.x = Math.min(95, Math.max(5, (e.clientX - r.left) / r.width * 100)); ed.text.y = Math.min(95, Math.max(5, (e.clientY - r.top) / r.height * 100)); el.style.left = ed.text.x + '%'; el.style.top = ed.text.y + '%'; });
+    el.addEventListener('pointerup', () => { drag = false; }); el.addEventListener('pointercancel', () => { drag = false; });
+  }
+  function setMusic(t) {
+    if (prevAudio) { prevAudio.pause(); prevAudio.remove(); prevAudio = null; }
+    ed.music = t ? { id: t.id, title: t.title, file: t.file, vol: ed.music ? ed.music.vol : 0.8 } : null;
+    if (t && mv) { prevAudio = h('audio', { src: t.file, loop: true }); prevAudio.volume = ed.music.vol; stage.append(prevAudio); if (!mv.paused) prevAudio.play().catch(() => {}); }
+    applyPreview();
+  }
+  function buildStage() {
+    stage = h('div', { class: 'stage' + (isVideo() ? ' tall' : '') });
+    if (isVideo()) {
+      mv = h('video', { src: media.url, playsinline: true, loop: true, autoplay: true, muted: true }); mv.muted = true;
+      mv.addEventListener('loadedmetadata', () => { dur = mv.duration || 0; if (ed.trim && ed.trim[1] > dur) ed.trim = null; if (tool) drawTool(); if (!thumbUrl) captureFrame(media.url, Math.min(dur * 0.3, 3), '', 160).then(u => { thumbUrl = u; if (tool === 'filter') drawTool(); }).catch(() => {}); });
+      mv.addEventListener('timeupdate', () => { if (ed.trim && (mv.currentTime >= ed.trim[1] || mv.currentTime < ed.trim[0] - 0.3)) { mv.currentTime = ed.trim[0]; if (prevAudio) prevAudio.currentTime = 0; } });
+      mv.addEventListener('play', () => { mv.playbackRate = ed.speed; if (prevAudio) prevAudio.play().catch(() => {}); });
+      mv.addEventListener('pause', () => { if (prevAudio) prevAudio.pause(); });
+      stage.addEventListener('click', (e) => { if (e.target === mv) { if (mv.paused) mv.play().catch(() => {}); else mv.pause(); } });
+    } else { mv = h('img', { src: media.url, alt: '' }); thumbUrl = media.url; }
+    stage.append(mv);
+    if (ed.music) { const t = ed.music; ed.music = null; setTimeout(() => setMusic(t), 0); }
+    applyPreview();
+    return stage;
+  }
+  const toolDefs = () => [['filter', 'Filters', 'filter']].concat(isVideo() && mode !== 'story' ? [['trim', 'Trim', 'scissors'], ['speed', 'Speed', 'speed'], ['cover', 'Cover', 'cover'], ['music', 'Music', 'music']] : []).concat(mode !== 'story' ? [['text', 'Text', 'text']] : []);
+  const toolRow = h('div', { class: 'tool-row' }), panel = h('div', { class: 'tool-panel glass', hidden: true });
+  function drawTools() { toolRow.replaceChildren(...toolDefs().map(([k, l, ic]) => h('button', { type: 'button', class: 'tool' + (tool === k ? ' on' : ''), onclick: () => { tool = tool === k ? null : k; drawTools(); drawTool(); } }, h('span', { class: 'ti', html: ICONS[ic] }), l))); }
+  function rangeRow(label, min, max, step, val, oninput, fmtv) { const out = h('b', null, fmtv(val)); const r = h('input', { type: 'range', min, max, step, value: val }); r.oninput = () => { out.textContent = fmtv(+r.value); oninput(+r.value); }; return h('label', { class: 'rrow' }, h('span', null, label), r, out); }
+  async function drawTool() {
+    panel.hidden = !tool; if (!tool) return panel.replaceChildren();
+    if (tool === 'filter') panel.replaceChildren(h('div', { class: 'filter-strip' }, ...FILTER_NAMES.map(f => h('button', { type: 'button', class: 'fl' + (ed.filter === f ? ' on' : ''), onclick: () => { ed.filter = f; applyPreview(); drawTool(); } }, thumbUrl ? h('img', { src: thumbUrl, alt: '', style: 'filter:' + FILTERS[f] }) : h('i', { class: 'ph', style: 'filter:' + FILTERS[f] }), h('span', null, f[0].toUpperCase() + f.slice(1))))));
+    else if (tool === 'speed') panel.replaceChildren(h('div', { class: 'chips' }, ...[0.5, 0.75, 1, 1.5, 2].map(sp => h('button', { type: 'button', class: 'chip' + (ed.speed === sp ? ' on' : ''), onclick: () => { ed.speed = sp; applyPreview(); drawTool(); } }, sp + 'x'))), h('small', { class: 'muted' }, 'Viewers see the reel at this speed.'));
+    else if (tool === 'trim') {
+      if (!dur) return panel.replaceChildren(spinner());
+      const t = ed.trim || [0, dur]; const info = h('small', { class: 'muted' }, 'Length ' + tfmt(t[1] - t[0]));
+      const upd = () => { info.textContent = 'Length ' + tfmt(ed.trim[1] - ed.trim[0]); };
+      panel.replaceChildren(
+        rangeRow('Start', 0, dur, 0.1, t[0], (v) => { ed.trim = [Math.min(v, (ed.trim || t)[1] - 0.5), (ed.trim || t)[1]]; mv.currentTime = ed.trim[0]; upd(); }, tfmt),
+        rangeRow('End', 0, dur, 0.1, t[1], (v) => { ed.trim = [(ed.trim || t)[0], Math.max(v, (ed.trim || t)[0] + 0.5)]; mv.currentTime = Math.max(ed.trim[0], ed.trim[1] - 1); upd(); }, tfmt),
+        info, h('button', { type: 'button', class: 'gbtn sm', onclick: () => { ed.trim = null; drawTool(); } }, 'Reset trim'));
+    } else if (tool === 'cover') {
+      if (!dur) return panel.replaceChildren(spinner());
+      const img = h('img', { class: 'cover-prev', alt: 'Cover' }); let tm = null;
+      const grab = (v) => { clearTimeout(tm); tm = setTimeout(() => captureFrame(media.url, v, FILTERS[ed.filter], 240).then(u => { img.src = u; }).catch(() => {}), 150); };
+      const t0 = ed.coverT == null ? coverTime() : ed.coverT;
+      panel.replaceChildren(h('div', { class: 'cover-wrap' }, img, h('div', { style: 'flex:1' }, h('b', null, 'Choose the cover frame'), h('small', { class: 'muted', style: 'display:block' }, 'This picture shows in the grid and before the reel plays.'),
+        rangeRow('Frame', 0, Math.max(0.1, dur - 0.05), 0.05, t0, (v) => { ed.coverT = v; mv.pause(); mv.currentTime = v; grab(v); }, tfmt))));
+      grab(t0);
+    } else if (tool === 'music') {
+      if (!tracks) { panel.replaceChildren(spinner()); try { tracks = (await GET('/api/music')).tracks; } catch (e) { toast(e.message); return; } if (tool !== 'music') return; }
+      let pv = null;
+      panel.replaceChildren(
+        h('div', { class: 'music-list' }, h('button', { type: 'button', class: 'mrow' + (!ed.music ? ' on' : ''), onclick: () => { setMusic(null); drawTool(); } }, h('span', { class: 'ti', html: ICONS.mute }), h('div', { class: 'st' }, h('b', null, 'No music'), h('small', null, 'Only the original sound'))),
+          ...tracks.map(t => h('div', { class: 'mrow' + (ed.music && ed.music.id === t.id ? ' on' : '') },
+            h('button', { type: 'button', class: 'icon-btn play', 'aria-label': 'Preview ' + t.title, html: ICONS.play, onclick: (e) => { e.stopPropagation(); if (pv) { pv.pause(); pv = null; return; } pv = new Audio(t.file); pv.volume = 0.8; pv.play().catch(() => {}); setTimeout(() => { if (pv) { pv.pause(); pv = null; } }, 8000); } }),
+            h('button', { type: 'button', class: 'st', onclick: () => { if (pv) { pv.pause(); pv = null; } setMusic(t); mv.currentTime = ed.trim ? ed.trim[0] : 0; mv.play().catch(() => {}); drawTool(); } }, h('b', null, t.title), h('small', null, t.artist + ' · royalty-free · ' + t.dur + 's')),
+            ed.music && ed.music.id === t.id ? h('span', { class: 'ok' }, '✓') : null))),
+        ed.music ? rangeRow('Music volume', 0, 1, 0.05, ed.music.vol, (v) => { ed.music.vol = v; if (prevAudio) prevAudio.volume = v; }, (v) => Math.round(v * 100) + '%') : null,
+        toggleRow('Original sound', ed.orig ? 'The video\'s own sound plays' : 'Original sound is muted', ed.orig, (v) => { ed.orig = v; applyPreview(); }));
+    } else if (tool === 'text') {
+      if (!ed.text) { ed.text = { t: '', color: '#ffffff', style: 'bold', x: 50, y: 40, size: 28 }; }
+      const inp = h('input', { class: 'field', placeholder: 'Type your text…', maxlength: 120, value: ed.text.t, style: 'height:42px;margin:0 0 8px' });
+      inp.oninput = () => { ed.text.t = inp.value; applyPreview(); };
+      panel.replaceChildren(inp,
+        h('div', { class: 'chips' }, ...['classic', 'bold', 'neon', 'box'].map(st => h('button', { type: 'button', class: 'chip' + (ed.text.style === st ? ' on' : ''), onclick: () => { ed.text.style = st; applyPreview(); drawTool(); } }, st[0].toUpperCase() + st.slice(1)))),
+        h('div', { class: 'swatches' }, ...TEXT_COLORS.map(c => h('button', { type: 'button', class: 'sw' + (ed.text.color === c ? ' on' : ''), style: 'background:' + c, 'aria-label': 'Colour ' + c, onclick: () => { ed.text.color = c; applyPreview(); drawTool(); } }))),
+        rangeRow('Size', 14, 64, 1, ed.text.size, (v) => { ed.text.size = v; applyPreview(); }, (v) => v + ''),
+        h('small', { class: 'muted' }, 'Drag the text on the picture to move it.'),
+        h('button', { type: 'button', class: 'gbtn sm', onclick: () => { ed.text = null; applyPreview(); tool = null; drawTools(); drawTool(); } }, 'Remove text'));
+      setTimeout(() => inp.focus(), 50);
+    }
+  }
+  function optRow(k, label, sub) { return toggleRow(label, sub, meta[k], (v) => { meta[k] = v; }); }
+  const tagsRow = () => h('button', { type: 'button', class: 'srow', onclick: () => tagPeopleSheet(meta.tags, (t) => { meta.tags = t; draw(); }) }, h('span', { class: 'sic', html: ICONS.tag }), h('div', { class: 'st' }, h('b', null, 'Tag people'), h('small', null, meta.tags.length ? meta.tags.map(u => '@' + u).join(', ') : 'Tag friends who are in this')), h('span', { class: 'chev', html: ICONS.chev }));
+  function locRow() { const i = h('input', { class: 'field inline', placeholder: 'Add location', maxlength: 80, value: meta.location }); i.oninput = () => { meta.location = i.value; }; return h('label', { class: 'srow' }, h('span', { class: 'sic', html: ICONS.pin }), i); }
   function draw() {
-    if (!media) area.replaceChildren(h('button', { class: 'pick glass', style: 'width:100%', onclick: choose }, h('span', { style: 'display:contents', html: ICONS.image }), h('b', null, 'Tap to choose a photo or video'), h('small', null, 'JPG, PNG, WebP up to 8 MB · MP4/WebM up to 15 MB')));
-    else area.replaceChildren(h('div', { class: 'preview glass' }, media.kind === 'video' ? h('video', { src: media.url, controls: true, playsinline: true, autoplay: true, muted: true }) : h('img', { src: media.url, alt: '' })),
-      h('button', { class: 'gbtn sm', onclick: choose, style: 'margin-bottom:12px' }, 'Change'), mode === 'post' ? caption : null,
-      h('div', { class: 'list glass slist', style: 'margin-bottom:12px' }, ...(mode === 'post'
-        ? [optRow('hideLikes', 'Hide like count', 'Only you will see the total number of likes'), optRow('commentsOff', 'Turn off commenting', 'You can change this later from the ••• menu')]
-        : [optRow('closeFriends', 'Close Friends only', 'Green ring — only people on your Close Friends list see it')])), shareBtn);
+    if (!media) {
+      stage = mv = ov = null; tool = null;
+      area.replaceChildren(h('button', { class: 'pick glass', style: 'width:100%', onclick: choose }, h('span', { style: 'display:contents', html: ICONS.image }), h('b', null, mode === 'reel' ? 'Tap to choose a video for your reel' : 'Tap to choose a photo or video'), h('small', null, 'JPG, PNG, WebP up to 8 MB · MP4/WebM up to 15 MB')));
+      bar.hidden = true; shareTop.disabled = true; return;
+    }
+    bar.hidden = false; shareTop.disabled = false;
+    draftBtn.hidden = mode === 'story';
+    if (!stage) buildStage();
+    drawTools(); drawTool();
+    area.replaceChildren(stage, h('div', { class: 'row-btns' }, h('button', { class: 'gbtn sm', onclick: choose }, 'Change'), isVideo() ? h('small', { class: 'muted' }, 'Tap the video to play / pause') : null), toolRow, panel,
+      mode === 'story' ? null : h('div', { class: 'cap-wrap' }, caption, sugBox),
+      h('div', { class: 'list glass slist', style: 'margin-bottom:12px' }, ...(mode === 'story'
+        ? [optRow('closeFriends', 'Close Friends only', 'Green ring — only people on your Close Friends list see it')]
+        : [tagsRow(), locRow()])),
+      mode === 'story' ? null : section('Audience', choiceRow('Who can see this', meta.vis === 'close' ? 'Only your Close Friends list' : meta.vis === 'followers' ? 'Only your followers' : 'Everyone who can see your profile', meta.vis, [['everyone', 'Everyone'], ['followers', 'Followers'], ['close', 'Close Friends']], (v) => { meta.vis = v; })),
+      mode === 'story' ? null : section('Advanced settings', optRow('hideLikes', 'Hide like count', 'Only you will see the total number of likes'), optRow('commentsOff', 'Turn off commenting', 'You can change this later from the ••• menu')),
+      h('div', { style: 'height:90px' }));
   }
   async function choose() {
-    const f = await pickFile('image/*,video/mp4,video/webm,video/quicktime'); if (!f) return;
-    try { media = await prepareMedia(f, 1440); draw(); } catch (e) { toast(e.message); }
-  }
-  shareBtn.onclick = async () => {
-    if (!media) return; shareBtn.disabled = true; shareBtn.textContent = 'Sharing…';
+    const f = await pickFile(mode === 'reel' ? 'video/mp4,video/webm,video/quicktime' : 'image/*,video/mp4,video/webm,video/quicktime'); if (!f) return;
     try {
-      if (mode === 'post') { const d = await POST('/api/posts', { media: media.data, caption: caption.value, commentsOff: opt.commentsOff, hideLikes: opt.hideLikes }); toast(d.mentionBlocked && d.mentionBlocked.length ? ('Posted ✨ (' + d.mentionBlocked.join(', ') + " doesn't allow mentions)") : 'Posted ✨'); go('#/p/' + d.post.id); }
-      else { await POST('/api/stories', { media: media.data, closeFriends: opt.closeFriends }); toast(opt.closeFriends ? 'Shared with Close Friends 💚' : 'Added to your story ✨'); go('#/'); }
-    } catch (e) { toast(e.message); shareBtn.disabled = false; shareBtn.textContent = 'Share'; }
-  };
+      const m = await prepareMedia(f, 1440);
+      if (mode === 'reel' && m.kind !== 'video') return toast('A reel needs a video');
+      if (prevAudio) { prevAudio.pause(); prevAudio = null; }
+      media = m; draftId = null; stage = null; thumbUrl = null; dur = 0; ed.trim = null; ed.coverT = null; ed.speed = 1;
+      if (m.kind === 'video' && mode === 'post') mode = 'reel';
+      drawSeg(); draw();
+    } catch (e) { toast(e.message); }
+  }
+  function openDraft(d) {
+    if (prevAudio) { prevAudio.pause(); prevAudio = null; }
+    media = { kind: d.type, url: d.media, draftId: d.id }; draftId = d.id; stage = null; thumbUrl = d.cover || null; dur = 0;
+    const e = d.edit || {};
+    Object.assign(ed, { filter: e.filter || 'normal', speed: e.speed || 1, trim: e.trim || null, text: e.text || null, music: e.music || null, orig: e.orig !== false, coverT: null });
+    Object.assign(meta, { location: d.location || '', tags: d.tags || [], vis: d.vis || 'everyone', hideLikes: !!d.hideLikes, commentsOff: !!d.commentsOff });
+    caption.value = d.caption || ''; mode = d.kind === 'reel' ? 'reel' : 'post'; drawSeg(); draw(); toast('Draft opened');
+  }
+  const editPayload = () => ({ filter: ed.filter, speed: ed.speed, trim: ed.trim, text: ed.text && ed.text.t ? ed.text : null, music: ed.music ? { id: ed.music.id, vol: ed.music.vol } : null, orig: ed.orig });
+  const fields = () => ({ kind: mode === 'reel' ? 'reel' : 'post', caption: caption.value, location: meta.location, tags: meta.tags, visibility: meta.vis, hideLikes: meta.hideLikes, commentsOff: meta.commentsOff });
+  const coverTime = () => ed.coverT != null ? ed.coverT : (ed.trim ? ed.trim[0] + Math.min((ed.trim[1] - ed.trim[0]) * 0.3, 3) : Math.min((dur || 1) * 0.3, 3));
+  function lock(on) { busy = on; [shareBtn, shareTop, draftBtn].forEach(b => { b.disabled = on; }); }
+  async function saveDraft() {
+    if (!media || busy) return; lock(true); setProg(0, 'Saving draft…');
+    try {
+      const body = Object.assign(fields(), { edit: editPayload() });
+      if (isVideo()) body.cover = await captureFrame(media.url, coverTime(), FILTERS[ed.filter]).catch(() => null);
+      if (draftId) { await PUT('/api/drafts/' + draftId, body); setProg(1); }
+      else { body.media = media.data; const d = await uploadJSON('/api/drafts', body, (f) => setProg(f * 0.98)); draftId = d.draft.id; media.draftId = d.draft.id; setProg(1); }
+      toast('Saved to drafts 📝'); draftsBtn.hidden = false;
+    } catch (e) { toast(e.message); }
+    prog.hidden = true; lock(false);
+  }
+  async function share() {
+    if (!media) return toast('Choose a photo or video first');
+    if (busy) return;
+    if (mode === 'reel' && !isVideo()) return toast('A reel needs a video');
+    lock(true); setProg(0, mode === 'story' ? 'Sharing to your story…' : 'Preparing…');
+    try {
+      if (mode === 'story') {
+        if (!media.data && media.kind === 'video') throw new Error('Drafts can be shared as a Post or Reel');
+        const sd = media.kind === 'image' ? await bakeImage(media.url, FILTERS[ed.filter]) : media.data;
+        await uploadJSON('/api/stories', { media: sd, closeFriends: meta.closeFriends }, (f) => setProg(f, 'Uploading…'));
+        toast(meta.closeFriends ? 'Shared with Close Friends 💚' : 'Added to your story ✨'); prog.hidden = true; go('#/'); return;
+      }
+      const body = fields();
+      if (media.kind === 'image') { body.media = await bakeImage(media.url, FILTERS[ed.filter], ed.text && ed.text.t ? ed.text : null); }
+      else {
+        body.edit = editPayload();
+        body.cover = await captureFrame(media.url, coverTime(), FILTERS[ed.filter]).catch(() => null);
+        if (media.draftId && !media.data) body.draftId = media.draftId; else body.media = media.data;
+      }
+      setProg(0.02, 'Uploading…');
+      const d = await uploadJSON('/api/posts', body, (f) => setProg(Math.min(0.98, f)));
+      setProg(1, 'Done ✓');
+      if (draftId && media.kind === 'image') DEL('/api/drafts/' + draftId).catch(() => {}); // image drafts are re-uploaded baked, so the draft copy goes
+      toast((mode === 'reel' ? 'Reel shared 🎬' : 'Posted ✨') + (d.mentionBlocked && d.mentionBlocked.length ? ' (' + d.mentionBlocked.join(', ') + " doesn't allow mentions)" : ''));
+      prog.hidden = true; state.homeView = null; go('#/p/' + d.post.id);
+    } catch (e) { toast(e.message); prog.hidden = true; lock(false); }
+  }
+  state.cleanup = () => { if (prevAudio) prevAudio.pause(); if (mv && mv.pause) mv.pause(); };
   drawSeg(); draw();
-  return pageWrap(topbar('New ' + 'post', { back: true }), h('main', { class: 'view create' }, seg, area));
-}, { tab: 'create' });
+  return pageWrap(topbar(titleEl, { back: true, right: [shareTop] }), h('main', { class: 'view create' }, h('div', { class: 'create-head' }, seg, draftsBtn), area), bar, prog);
+}, { tab: 'create', noTabs: true });
 
 // ------------------------------------------------------------------ profile
 addRoute(/^#\/u\/([a-z0-9._]+)$/, async (username) => {
@@ -830,7 +1185,7 @@ addRoute(/^#\/notifications$/, async () => {
   GET('/api/notifications').then(d => {
     state.unreadNotif = 0; updateBadges(); POST('/api/notifications/read').catch(() => {});
     if (d.followRequests) reqSlot.replaceChildren(h('a', { class: 'row glass reqrow', href: '#/requests' }, h('span', { class: 'reqic', html: ICONS.user }), h('div', { class: 'meta' }, h('b', null, 'Follow requests'), h('small', null, 'Approve or ignore requests')), h('i', { class: 'cnt' }, String(d.followRequests)), h('span', { class: 'chev', html: ICONS.chev })));
-    const txt = { like: 'liked your post.', comment: 'commented: ', follow: 'started following you.', request: 'requested to follow you.', accept: 'accepted your follow request.', mention: 'mentioned you: ' };
+    const txt = { like: 'liked your post.', comment: 'commented: ', follow: 'started following you.', request: 'requested to follow you.', accept: 'accepted your follow request.', mention: 'mentioned you: ', tag: 'tagged you in a post.' };
     box.replaceChildren(...(d.notifications.length ? d.notifications.map(n => h('div', { class: 'row notif' + (n.read ? '' : ' unread') },
       h('a', { href: '#/u/' + n.user.username }, avatar(n.user)),
       h('div', { class: 'meta' }, h('a', { href: '#/u/' + n.user.username }, h('b', { style: 'display:inline' }, n.user.username)), ' ', txt[n.type] || '', (n.type === 'comment' || n.type === 'mention') ? n.text : '', ' ', h('small', null, ago(n.created))),
@@ -990,7 +1345,7 @@ addRoute(/^#\/about$/, async () => {
   };
   logo.addEventListener('pointerup', up); logo.addEventListener('pointerleave', () => { clearTimeout(holdT); holdT = null; });
   return pageWrap(topbar('About', { back: true }), h('main', { class: 'view' }, h('div', { class: 'about glass' },
-    logo, h('div', { class: 'ver' }, 'Version ' + (state.version || '1.3.0')),
+    logo, h('div', { class: 'ver' }, 'Version ' + (state.version || '1.4.0')),
     h('p', null, 'A liquid glass photo-sharing app: posts, stories that vanish after 24 hours, Close Friends, reels, likes, comments, saves, notifications, private accounts and real-time direct messages.'),
     h('p', null, h('b', { style: 'color:var(--text)' }, 'Educational project by Tech Bro Z, not affiliated with Instagram/Meta.'), ' Built for learning. All names, logos and designs here are original.'),
     h('p', null, 'YouTube: @techbrozdeveloper · Instagram: @tech_bro_z_1'),
@@ -1036,6 +1391,13 @@ function choiceRow(label, sub, value, options, onchange) {
   draw();
   return h('div', { class: 'srow col' }, h('div', { class: 'st' }, h('b', null, label), sub ? h('small', null, sub) : null), seg);
 }
+function classicRow() { // v1.4: one tap switches the whole app between Liquid Glass and Classic (applied instantly, saved to your account)
+  const on = !!(state.me && state.me.settings && state.me.settings.classic);
+  return toggleRow('Classic mode', 'Plain classic Instagram look — no glass, blur or glow. Turn off to get Liquid Glass back.', on, async (v) => {
+    applyClassic(v);
+    try { await saveSetting({ classic: v }); toast(v ? 'Classic mode on ✓' : 'Liquid Glass is back ✨'); } catch (e) { applyClassic(!v); throw e; }
+  });
+}
 const section = (title, ...rows) => h('div', null, title ? h('div', { class: 'section-t' }, title) : null, h('div', { class: 'list glass slist' }, ...rows.filter(Boolean)));
 const settingsPage = (title, ...kids) => pageWrap(topbar(title, { back: true }), h('main', { class: 'view settings' }, ...kids));
 
@@ -1056,14 +1418,16 @@ addRoute(/^#\/settings$/, async () => {
       linkRow('eye', 'Activity status, tags and mentions', 'Online status, who can @mention you', '#/settings/activity'),
       linkRow('shield', 'Restricted accounts', 'Limit interactions quietly', '#/settings/people/restricted'),
       linkRow('mute', 'Muted accounts', 'Posts and stories you muted', '#/settings/people/muted')),
-    section('Your app',
-      linkRow('bell', 'Notifications', 'Likes, comments, follows, messages', '#/settings/notifications'),
+    section('Customise',
+      classicRow(),
       linkRow('gear', 'Theme and language', 'Dark, light or automatic', '#/settings/account')),
+    section('Your app',
+      linkRow('bell', 'Notifications', 'Likes, comments, follows, messages', '#/settings/notifications')),
     section('Security and account',
       linkRow('lock', 'Password and security', 'Change password, login activity, devices', '#/settings/security'),
       linkRow('user', 'Your account', 'Download your data, deactivate or delete', '#/settings/account')),
     section('About',
-      linkRow('menu', 'About Private Insta', 'Version ' + (state.version || '1.3.0'), '#/about')),
+      linkRow('menu', 'About Private Insta', 'Version ' + (state.version || '1.4.0'), '#/about')),
     h('button', { class: 'gbtn block logout', onclick: async () => { await POST('/api/logout').catch(() => {}); state.me = null; state.es && state.es.close(); go('#/login'); } }, 'Log out ' + me.username));
 }, { tab: 'profile' });
 
@@ -1163,7 +1527,8 @@ addRoute(/^#\/settings\/account$/, async () => {
   lang.onchange = async () => { await saveSetting({ language: lang.value }).catch(() => {}); toast(lang.value === 'en' ? 'Language: English' : 'Saved — Hindi app text is coming in a future update'); };
   return settingsPage('Your account',
     section('Theme',
-      choiceRow('Appearance', 'Auto follows your phone', s.theme || 'auto', [['auto', 'Auto'], ['dark', 'Dark'], ['light', 'Light']], async (v) => { await saveSetting({ theme: v }); applyTheme(v); })),
+      choiceRow('Appearance', 'Auto follows your phone', s.theme || 'auto', [['auto', 'Auto'], ['dark', 'Dark'], ['light', 'Light']], async (v) => { await saveSetting({ theme: v }); applyTheme(v); }),
+      classicRow()),
     section('Language', h('div', { class: 'srow col' }, h('div', { class: 'st' }, h('b', null, 'App language')), lang)),
     section('Your information',
       h('a', { class: 'srow', href: '/api/me/export', download: 'private-insta-data.zip', onclick: () => toast('Preparing your data… the zip download will start') }, h('span', { class: 'sic', html: ICONS.save }), h('div', { class: 'st' }, h('b', null, 'Download your data'), h('small', null, 'A zip with your profile, settings, posts, comments, messages and photos')), h('span', { class: 'chev', html: ICONS.chev }))),

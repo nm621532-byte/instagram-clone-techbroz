@@ -10,7 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-const VERSION = '1.3.0';
+const VERSION = '1.4.0';
 const APP_NAME = 'Private Insta';
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, 'data'));
@@ -62,6 +62,7 @@ const DEFAULT_SETTINGS = {
   mentionsFrom: 'everyone',       // everyone | followers | nobody
   notif: { likes: true, comments: true, follows: true, messages: true, mentions: true },
   theme: 'auto', language: 'en',
+  classic: false,                 // v1.4: Classic mode (flat Instagram look instead of liquid glass)
 };
 const LIST_KEYS = ['blocked', 'restricted', 'closeFriends', 'storyHidden', 'mutedPosts', 'mutedStories'];
 const BOT_LISTS = Object.freeze(Object.fromEntries(LIST_KEYS.map(k => [k, Object.freeze([])])));
@@ -93,11 +94,16 @@ function migrate() {
   }
   for (const u of Object.values(db.users)) { if (u.isBot) continue; if (!u.settings) changed = true; settingsOf(u); L(u); if (!Array.isArray(u.logins)) u.logins = []; }
   for (const p of Object.values(db.posts)) { if (p.commentsOff === undefined) { p.commentsOff = false; p.hideLikes = false; changed = true; } }
+  if (!db.drafts || typeof db.drafts !== 'object') { db.drafts = {}; changed = true; } // v1.4: per-user upload drafts
   if ((db.schema || 1) < 2) { db.schema = 2; changed = true; }
   if (db.schema < 3) { migrateBoostsToBots(); db.schema = 3; changed = true; } // v1.2: boost numbers -> bot entries (same totals)
   if (db.schema < 4) { // v1.3: keep a copy of the v1.2 database before any reels get imported
     try { if (fs.existsSync(DB_FILE)) fs.copyFileSync(DB_FILE, path.join(DATA_DIR, 'db.backup-v1.2.json')); } catch (e) { console.error('backup', e.message); }
     RI(); db.schema = 4; changed = true;
+  }
+  if (db.schema < 5) { // v1.4: keep a copy of the v1.3 database before drafts / audience / edits fields are added
+    try { if (fs.existsSync(DB_FILE)) fs.copyFileSync(DB_FILE, path.join(DATA_DIR, 'db.backup-v1.3.json')); } catch (e) { console.error('backup', e.message); }
+    db.schema = 5; changed = true;
   }
   if (changed) save();
 }
@@ -131,6 +137,15 @@ const gone = (u) => !u || u.deactivated || u.suspended;               // hidden 
 function blockedEither(a, b) {
   const ua = db.users[a], ub = db.users[b];
   return !!((ua && L(ua).blocked.includes(b)) || (ub && L(ub).blocked.includes(a)));
+}
+// v1.4: per-post audience — 'everyone' (default), 'followers' (only approved followers), 'close' (owner's Close Friends)
+const VIS = ['everyone', 'followers', 'close'];
+function postVisible(x, me) {
+  if (!x || !x.vis || x.vis === 'everyone' || x.uid === me.id) return true;
+  const o = db.users[x.uid]; if (!o) return false;
+  if (x.vis === 'followers') return isFollowing(me.id, o.id);
+  if (x.vis === 'close') return L(o).closeFriends.includes(me.id);
+  return false;
 }
 function canView(viewer, owner) { // posts, reels, follower lists of `owner`
   if (!owner) return false;
@@ -328,7 +343,7 @@ function RI() { // import state lives in the db: { files: { '0001.mp4': {pid, at
 const logUniform = (a, b) => Math.round(Math.exp(Math.log(a) + Math.random() * (Math.log(b) - Math.log(a))));
 const posterName = (f) => f.replace(/\.mp4$/, '.jpg');
 function postMedia(p) { return p && p.reel ? '/reels-media/' + p.media : mediaUrl(p && p.media); }
-function postPoster(p) { return p && p.reel && p.reel.poster ? '/reels-media/' + posterName(p.media) : null; }
+function postPoster(p) { if (p && p.cover) return mediaUrl(p.cover); return p && p.reel && p.reel.poster ? '/reels-media/' + posterName(p.media) : null; }
 function importPath(file) { // a file directly inside IMPORT_DIR, never anything else (no ../, no sub folders)
   if (typeof file !== 'string' || !(REEL_FILE_RE.test(file) || REEL_POSTER_RE.test(file))) return null;
   const f = path.join(IMPORT_DIR, file);
@@ -499,6 +514,9 @@ function postView(p, me) {
     preview: vis.filter(c => !c.hidden && !c.restricted).sort((a, b) => b.created - a.created).slice(0, 2).reverse()
       .map(c => ({ id: c.id, text: c.text, user: { username: db.users[c.uid] ? db.users[c.uid].username : 'deleted' } })),
     mine,
+    // v1.4 upload extras (non-destructive edits are applied by the player: trim, speed, filter, text, music)
+    edit: p.edit || null, location: p.location || '', vis: p.vis || 'everyone', isReel: !!(p.isReel || p.reel),
+    tags: (p.tags || []).map(i => db.users[i]).filter(u => u && !gone(u) && !blockedEither(me.id, u.id)).map(u => u.username),
   };
 }
 function readReceiptsOn(u) { return !!(u && settingsOf(u).readReceipts); }
@@ -511,12 +529,12 @@ function messageView(m, me) {
   if (m.kind === 'post') {
     const p = db.posts[m.postId]; const owner = p && db.users[p.uid];
     if (!p) o.post = null;
-    else if (!canView(me, owner)) o.post = { id: p.id, locked: true, user: publicUser(owner) };
+    else if (!canView(me, owner) || !postVisible(p, me)) o.post = { id: p.id, locked: true, user: publicUser(owner) };
     else o.post = { id: p.id, media: postMedia(p), poster: postPoster(p), type: p.type, caption: p.caption.slice(0, 80), user: publicUser(owner) };
   }
   return o;
 }
-const NOTIF_PREF = { like: 'likes', comment: 'comments', follow: 'follows', request: 'follows', accept: 'follows', mention: 'mentions' };
+const NOTIF_PREF = { like: 'likes', comment: 'comments', follow: 'follows', request: 'follows', accept: 'follows', mention: 'mentions', tag: 'mentions' };
 function notify(to, from, type, extra) {
   if (to === from) return;
   const target = db.users[to]; if (!target || target.isBot || blockedEither(to, from)) return;   // bots never get notifications
@@ -575,8 +593,8 @@ function mediaAllowed(file, meta, me, req) {
   const ses = req && db.sessions[req.sessKey];
   if (me.admin && ses && ses.adminUntil > now()) return true; // unlocked admin can moderate posts/stories (never DM photos)
   if (owner.avatar === file) return !L(owner).blocked.includes(me.id);
-  const post = Object.values(db.posts).find(p => p.media === file);
-  if (post) return canView(me, db.users[post.uid]);
+  const post = Object.values(db.posts).find(p => p.media === file || p.cover === file);
+  if (post) return canView(me, db.users[post.uid]) && postVisible(post, me);
   const story = Object.values(db.stories).find(s => s.media === file);
   if (story) return storyVisible(story, me);
   return false;
@@ -673,7 +691,7 @@ const SEC_HEADERS = {
   'X-Frame-Options': 'SAMEORIGIN',
   'Content-Security-Policy': "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'",
 };
-const STATIC_MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.ico': 'image/x-icon', '.jpg': 'image/jpeg', '.zip': 'application/zip', '.apk': 'application/vnd.android.package-archive' };
+const STATIC_MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.ico': 'image/x-icon', '.jpg': 'image/jpeg', '.zip': 'application/zip', '.apk': 'application/vnd.android.package-archive', '.m4a': 'audio/mp4', '.mp3': 'audio/mpeg' };
 
 function serveFile(req, res, file, mime, cache) {
   fs.stat(file, (err, st) => {
@@ -721,7 +739,8 @@ function route(method, pattern, auth, fn) {
   routes.push({ method, re, keys, auth, fn });
 }
 function deleteUserData(me) { // removes a user and everything that points at them
-  for (const x of Object.values(db.posts)) if (x.uid === me.id) { for (const c of Object.values(db.comments)) if (c.pid === x.id) delete db.comments[c.id]; dropMedia(x.media); delete db.posts[x.id]; }
+  for (const d of Object.values(db.drafts || {})) if (d.uid === me.id) { dropMedia(d.media); if (d.cover) dropMedia(d.cover); delete db.drafts[d.id]; }
+  for (const x of Object.values(db.posts)) if (x.uid === me.id) { for (const c of Object.values(db.comments)) if (c.pid === x.id) delete db.comments[c.id]; dropMedia(x.media); if (x.cover) dropMedia(x.cover); delete db.posts[x.id]; }
   for (const x of Object.values(db.posts)) { x.likes = x.likes.filter(u => u !== me.id); x.saves = x.saves.filter(u => u !== me.id); }
   for (const c of Object.values(db.comments)) if (c.uid === me.id || !db.posts[c.pid]) delete db.comments[c.id];
   for (const st of Object.values(db.stories)) { if (st.uid === me.id) { dropMedia(st.media); delete db.stories[st.id]; } else st.seen = st.seen.filter(u => u !== me.id); }
@@ -880,7 +899,7 @@ route('GET', '/api/me/export', true, async (req, res, b, me) => {
 
 // ================================================================ settings
 const ENUMS = { storyReplies: ['everyone', 'following', 'off'], dmFrom: ['everyone', 'followers', 'nobody'], commentsFrom: ['everyone', 'followers', 'off'], mentionsFrom: ['everyone', 'followers', 'nobody'], theme: ['auto', 'dark', 'light'], language: ['en', 'hi'] };
-const BOOLS = ['private', 'readReceipts', 'typing', 'activityStatus'];
+const BOOLS = ['private', 'readReceipts', 'typing', 'activityStatus', 'classic'];
 route('GET', '/api/settings', true, async (req, res, b, me) => send(res, 200, { settings: settingsOf(me) }));
 route('PUT', '/api/settings', true, async (req, res, b, me) => {
   const s = settingsOf(me); const next = JSON.parse(JSON.stringify(s));
@@ -950,8 +969,8 @@ route('GET', '/api/users/:username', true, async (req, res, b, me, p) => {
   const u = visibleUser(p.username, me);
   const isMe = u.id === me.id; const blockedByMe = L(me).blocked.includes(u.id);
   const locked = !canView(me, u);
-  const posts = locked ? [] : Object.values(db.posts).filter(x => x.uid === u.id).sort((a, c) => c.created - a.created)
-    .map(x => ({ id: x.id, type: x.type, media: postMedia(x), poster: postPoster(x), likes: (x.hideLikes && !isMe) ? null : x.likes.length + (x.bonusLikes || 0), comments: visibleComments(x, me).length + (x.bonusComments || 0), views: (x.views || []).length + (x.bonusViews || 0) }));
+  const posts = locked ? [] : Object.values(db.posts).filter(x => x.uid === u.id && postVisible(x, me)).sort((a, c) => c.created - a.created)
+    .map(x => ({ id: x.id, type: x.type, media: postMedia(x), poster: postPoster(x), edit: x.edit || null, vis: x.vis || 'everyone', likes: (x.hideLikes && !isMe) ? null : x.likes.length + (x.bonusLikes || 0), comments: visibleComments(x, me).length + (x.bonusComments || 0), views: (x.views || []).length + (x.bonusViews || 0) }));
   const user = Object.assign(publicUser(u, me), {
     bio: u.bio || '', website: u.website || '', pronouns: u.pronouns || '',
     posts: Object.values(db.posts).filter(x => x.uid === u.id).length, followers: followerCount(u), following: following(u.id).filter(i => !gone(db.users[i])).length,
@@ -1032,33 +1051,177 @@ route('GET', '/api/search', true, async (req, res, b, me, p, q) => {
 });
 
 // ================================================================ posts
-function listPosts(filter, q, me) {
-  const before = parseInt(q.get('before') || '0', 10) || Infinity;
+// v1.4: reels you already watched (per user, newest 3000) go after unseen ones in a fresh Reels order
+function markReelSeen(me, pid) {
+  if (!me.seenReels || typeof me.seenReels !== 'object') me.seenReels = {};
+  if (!me.seenReels[pid]) { me.seenReels[pid] = now(); const k = Object.keys(me.seenReels); if (k.length > 3000) { k.sort((a, c) => me.seenReels[a] - me.seenReels[c]); for (const old of k.slice(0, k.length - 3000)) delete me.seenReels[old]; } save(); }
+}
+function seedHash(str) { let h = 2166136261; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } h ^= h >>> 13; h = Math.imul(h, 0x5bd1e995); h ^= h >>> 15; return h >>> 0; }
+function listPosts(filter, q, me, opts) {
+  opts = opts || {};
   const limit = Math.min(parseInt(q.get('limit') || '12', 10) || 12, 30);
-  const rows = Object.values(db.posts).filter(x => canView(me, db.users[x.uid])).filter(filter).filter(x => x.created < before).sort((a, c) => c.created - a.created);
+  const base = Object.values(db.posts).filter(x => canView(me, db.users[x.uid]) && postVisible(x, me)).filter(filter);
+  const seed = clean(q.get('seed') || '', 40);
+  if (seed) { // v1.4 "fresh" order (tap Home/Reels again): your own + followed posts from the last 3 days first, then a new shuffle every seed
+    const offset = Math.max(0, parseInt(q.get('offset') || '0', 10) || 0);
+    const fresh = now() - 3 * 24 * 3600 * 1000;
+    const isFresh = (x) => !x.reel && x.created > fresh && (opts.freshFirst ? opts.freshFirst(x) : false);
+    const key = new Map(base.map(x => [x.id, seedHash(seed + ':' + x.id)]));
+    // "seen" is judged against the moment this Reels session opened (t0), so the order stays the same while you page
+    const t0 = parseInt(q.get('t0') || '0', 10) || now(), seenMap = opts.preferUnseen && me.seenReels || null;
+    const seen = (x) => !!(seenMap && seenMap[x.id] && seenMap[x.id] < t0);
+    const start = clean(q.get('start') || '', 40);
+    base.sort((a, c) => {
+      if (start) { if (a.id === start) return -1; if (c.id === start) return 1; }
+      const fa = isFresh(a), fc = isFresh(c); if (fa !== fc) return fa ? -1 : 1; if (fa) return c.created - a.created;
+      const sa = seen(a), sc = seen(c); if (sa !== sc) return sa ? 1 : -1;
+      return key.get(a.id) - key.get(c.id);
+    });
+    return { posts: base.slice(offset, offset + limit).map(x => postView(x, me)), more: base.length > offset + limit, next: offset + limit, seed };
+  }
+  const before = parseInt(q.get('before') || '0', 10) || Infinity;
+  const rows = base.filter(x => x.created < before).sort((a, c) => c.created - a.created);
   return { posts: rows.slice(0, limit).map(x => postView(x, me)), more: rows.length > limit };
 }
 route('GET', '/api/feed', true, async (req, res, b, me, p, q) => {
   const muted = L(me).mutedPosts, f = new Set(following(me.id).filter(x => !muted.includes(x)).concat(me.id));
   // v1.3: imported reels are mixed into everyone's home feed by time, so a brand-new account never sees an empty feed
-  send(res, 200, listPosts(x => f.has(x.uid) || (x.reel && !muted.includes(x.uid)), q, me));
+  send(res, 200, listPosts(x => f.has(x.uid) || (x.reel && !muted.includes(x.uid)), q, me, { freshFirst: x => f.has(x.uid) }));
 });
 route('GET', '/api/explore', true, async (req, res, b, me, p, q) => send(res, 200, listPosts(x => x.uid !== me.id && !L(me).mutedPosts.includes(x.uid), q, me)));
-route('GET', '/api/reels', true, async (req, res, b, me, p, q) => send(res, 200, listPosts(x => x.type === 'video', q, me)));
+route('GET', '/api/reels', true, async (req, res, b, me, p, q) => send(res, 200, listPosts(x => x.type === 'video', q, me, { freshFirst: x => x.uid === me.id && now() - x.created < 3600 * 1000, preferUnseen: true })));
 route('GET', '/api/saved', true, async (req, res, b, me, p, q) => send(res, 200, listPosts(x => x.saves.includes(me.id), q, me)));
+// ---------------------------------------------------------------- v1.4 richer upload: edits, cover, tags, location, audience, music, drafts
+const FILTERS = ['normal', 'clarendon', 'gingham', 'moon', 'lark', 'reyes', 'juno', 'slumber', 'crema', 'ludwig', 'aden'];
+const MUSIC = [ // royalty-free tracks made for this app (public/music); "orig" keeps the video's own sound
+  { id: 'chill-lofi', title: 'Chill Lo-fi', artist: 'Private Insta Audio', file: '/music/chill-lofi.m4a', dur: 32 },
+  { id: 'sunny-pop', title: 'Sunny Pop', artist: 'Private Insta Audio', file: '/music/sunny-pop.m4a', dur: 32 },
+  { id: 'desi-beat', title: 'Desi Beat', artist: 'Private Insta Audio', file: '/music/desi-beat.m4a', dur: 32 },
+  { id: 'night-drive', title: 'Night Drive', artist: 'Private Insta Audio', file: '/music/night-drive.m4a', dur: 32 },
+  { id: 'epic-rise', title: 'Epic Rise', artist: 'Private Insta Audio', file: '/music/epic-rise.m4a', dur: 32 },
+  { id: 'soft-piano', title: 'Soft Piano', artist: 'Private Insta Audio', file: '/music/soft-piano.m4a', dur: 32 },
+];
+const MAX_DRAFTS = 20;
+let tagCache = { at: 0, list: [] };
+const num = (v, lo, hi, def) => { const n = Number(v); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : def; };
+function parseEdit(e, kind) { // validated, normalised edit description (never trusted from the client as-is)
+  if (!e || typeof e !== 'object') return null;
+  const out = {};
+  if (e.filter !== undefined && e.filter !== null) { if (!FILTERS.includes(e.filter)) throw httpErr(400, 'Unknown filter'); if (e.filter !== 'normal') out.filter = e.filter; }
+  if (kind === 'video') {
+    if (e.speed !== undefined && e.speed !== null) { const sp = Number(e.speed); if (![0.5, 0.75, 1, 1.5, 2].includes(sp)) throw httpErr(400, 'Speed must be 0.5x, 0.75x, 1x, 1.5x or 2x'); if (sp !== 1) out.speed = sp; }
+    if (e.trim !== undefined && e.trim !== null) {
+      if (!Array.isArray(e.trim) || e.trim.length !== 2) throw httpErr(400, 'trim must be [start, end] in seconds');
+      const a = num(e.trim[0], 0, 3600, 0), z = num(e.trim[1], 0, 3600, 0);
+      if (!(z - a >= 0.5)) throw httpErr(400, 'Trimmed video must be at least 0.5 seconds');
+      out.trim = [Math.round(a * 100) / 100, Math.round(z * 100) / 100];
+    }
+    if (e.music !== undefined && e.music !== null) {
+      const t = MUSIC.find(m => m.id === (e.music && e.music.id)); if (!t) throw httpErr(400, 'Unknown music track');
+      out.music = { id: t.id, title: t.title, file: t.file, vol: num(e.music.vol, 0, 1, 0.8), start: num(e.music.start, 0, 25, 0) };
+    }
+    if (e.orig !== undefined) out.orig = !!e.orig; // false = original sound muted
+  }
+  if (e.text !== undefined && e.text !== null) {
+    const t = clean(e.text.t, 120); if (t) {
+      const col = /^#[0-9a-f]{6}$/i.test(String(e.text.color || '')) ? e.text.color : '#ffffff';
+      const style = ['classic', 'bold', 'neon', 'box'].includes(e.text.style) ? e.text.style : 'bold';
+      out.text = { t, color: col, style, x: num(e.text.x, 0, 100, 50), y: num(e.text.y, 0, 100, 50), size: num(e.text.size, 14, 64, 28) };
+    }
+  }
+  return Object.keys(out).length ? out : null;
+}
+function parseTags(arr, me) { // usernames -> user ids (real, visible people only)
+  if (arr === undefined || arr === null) return [];
+  if (!Array.isArray(arr)) throw httpErr(400, 'tags must be a list of usernames');
+  const ids = [];
+  for (const raw of arr.slice(0, 20)) {
+    const u = userByName(String(raw || '').replace(/^@/, '').toLowerCase());
+    if (!u || gone(u) || blockedEither(me.id, u.id)) throw httpErr(400, 'Cannot tag @' + clean(raw, 30));
+    if (u.id !== me.id && !ids.includes(u.id)) ids.push(u.id);
+  }
+  return ids;
+}
+function uploadFields(b, me, kind) {
+  const vis = b.visibility === undefined ? 'everyone' : b.visibility;
+  if (!VIS.includes(vis)) throw httpErr(400, 'visibility must be one of: ' + VIS.join(', '));
+  return { caption: clean(b.caption, 2200), commentsOff: !!b.commentsOff, hideLikes: !!b.hideLikes, vis, location: clean(b.location, 80), tags: parseTags(b.tags, me), edit: parseEdit(b.edit, kind), isReel: kind === 'video' && b.kind !== 'post' };
+}
 route('POST', '/api/posts', true, async (req, res, b, me) => {
-  const caption = clean(b.caption, 2200);
-  const m = storeMedia(b.media, me.id, ['image', 'video']);
-  const post = { id: id(), uid: me.id, media: m.file, type: m.kind, caption, created: now(), likes: [], saves: [], views: [], commentsOff: !!b.commentsOff, hideLikes: !!b.hideLikes };
-  db.posts[post.id] = post; save();
-  const mentionBlocked = handleMentions(caption, me, { pid: post.id, text: caption.slice(0, 80) });
+  let m, cover = null, draft = null;
+  if (b.draftId) { // publish a saved draft (only your own)
+    draft = db.drafts[String(b.draftId)];
+    if (!draft || draft.uid !== me.id) throw httpErr(404, 'Draft not found');
+    m = { file: draft.media, kind: draft.type };
+  }
+  if (b.kind === 'reel' && !draft && !(typeof b.media === 'string' && /^data:video\//i.test(b.media))) throw httpErr(400, 'A reel needs a video');
+  const f = uploadFields(b, me, draft ? draft.type : (/^data:video\//i.test(String(b.media || '')) ? 'video' : 'image'));
+  if (!m) m = storeMedia(b.media, me.id, ['image', 'video']);
+  if (b.kind === 'reel' && m.kind !== 'video') { if (!draft) dropMedia(m.file); throw httpErr(400, 'A reel needs a video'); }
+  if (m.kind === 'video') {
+    if (b.cover) cover = storeMedia(b.cover, me.id, ['image']).file;
+    else if (draft && draft.cover) cover = draft.cover;
+  }
+  const post = { id: id(), uid: me.id, media: m.file, type: m.kind, caption: f.caption, created: now(), likes: [], saves: [], views: [], commentsOff: f.commentsOff, hideLikes: f.hideLikes };
+  if (cover) post.cover = cover;
+  if (f.edit) post.edit = f.edit;
+  if (f.location) post.location = f.location;
+  if (f.tags.length) post.tags = f.tags;
+  if (f.vis !== 'everyone') post.vis = f.vis;
+  if (m.kind === 'video') post.isReel = f.isReel;
+  if (draft) { if (draft.cover && draft.cover !== cover) dropMedia(draft.cover); delete db.drafts[draft.id]; }
+  db.posts[post.id] = post; save(); tagCache.at = 0;
+  const mentionBlocked = post.vis === 'close' ? [] : handleMentions(f.caption, me, { pid: post.id, text: f.caption.slice(0, 80) });
+  for (const t of f.tags) if (postVisible(post, db.users[t])) notify(t, me.id, 'tag', { pid: post.id, text: f.caption.slice(0, 80) });
   send(res, 201, { post: postView(post, me), mentionBlocked });
+});
+const draftView = (d) => ({ id: d.id, type: d.type, kind: d.kind, media: mediaUrl(d.media), cover: d.cover ? mediaUrl(d.cover) : null, caption: d.caption, location: d.location || '', vis: d.vis || 'everyone', commentsOff: !!d.commentsOff, hideLikes: !!d.hideLikes, edit: d.edit || null, tags: (d.tags || []).map(i => db.users[i]).filter(Boolean).map(u => u.username), created: d.created, updated: d.updated });
+const myDraft = (pid, me) => { const d = db.drafts[pid]; if (!d || d.uid !== me.id) throw httpErr(404, 'Draft not found'); return d; }; // other people's drafts look like they don't exist
+route('GET', '/api/drafts', true, async (req, res, b, me) => {
+  send(res, 200, { drafts: Object.values(db.drafts).filter(d => d.uid === me.id).sort((a, c) => c.updated - a.updated).map(draftView) });
+});
+route('GET', '/api/drafts/:id', true, async (req, res, b, me, p) => send(res, 200, { draft: draftView(myDraft(p.id, me)) }));
+route('POST', '/api/drafts', true, async (req, res, b, me) => {
+  noDemo(me, 'save drafts');
+  if (Object.values(db.drafts).filter(d => d.uid === me.id).length >= MAX_DRAFTS) throw httpErr(400, 'You can keep up to ' + MAX_DRAFTS + ' drafts — post or delete one first');
+  const kind = /^data:video\//i.test(String(b.media || '')) ? 'video' : 'image';
+  const f = uploadFields(b, me, kind);
+  const m = storeMedia(b.media, me.id, ['image', 'video']);
+  const d = { id: id(), uid: me.id, media: m.file, type: m.kind, kind: b.kind === 'reel' && m.kind === 'video' ? 'reel' : 'post', caption: f.caption, location: f.location, vis: f.vis, commentsOff: f.commentsOff, hideLikes: f.hideLikes, edit: f.edit, tags: f.tags, created: now(), updated: now() };
+  if (m.kind === 'video' && b.cover) d.cover = storeMedia(b.cover, me.id, ['image']).file;
+  db.drafts[d.id] = d; save();
+  send(res, 201, { draft: draftView(d) });
+});
+route('PUT', '/api/drafts/:id', true, async (req, res, b, me, p) => {
+  const d = myDraft(p.id, me);
+  const f = uploadFields(Object.assign({ caption: d.caption, location: d.location, visibility: d.vis, commentsOff: d.commentsOff, hideLikes: d.hideLikes, kind: d.kind }, b, { tags: b.tags !== undefined ? b.tags : (d.tags || []).map(i => db.users[i] && db.users[i].username).filter(Boolean) }), me, d.type);
+  Object.assign(d, { caption: f.caption, location: f.location, vis: f.vis, commentsOff: f.commentsOff, hideLikes: f.hideLikes, tags: f.tags, updated: now() });
+  if (b.edit !== undefined) d.edit = f.edit;
+  if (b.cover && d.type === 'video') { if (d.cover) dropMedia(d.cover); d.cover = storeMedia(b.cover, me.id, ['image']).file; }
+  save(); send(res, 200, { draft: draftView(d) });
+});
+route('DELETE', '/api/drafts/:id', true, async (req, res, b, me, p) => {
+  const d = myDraft(p.id, me); dropMedia(d.media); if (d.cover) dropMedia(d.cover); delete db.drafts[d.id]; save(); send(res, 200, { ok: true });
+});
+route('GET', '/api/music', true, async (req, res) => send(res, 200, { tracks: MUSIC, filters: FILTERS }));
+route('GET', '/api/hashtags', true, async (req, res, b, me, p, q) => { // #hashtag suggestions (public posts only)
+  if (now() - tagCache.at > 60000) {
+    const cnt = new Map();
+    for (const x of Object.values(db.posts)) {
+      const o = db.users[x.uid]; if (!o || gone(o) || (x.vis && x.vis !== 'everyone') || settingsOf(o).private) continue;
+      const seen = new Set(); for (const m of String(x.caption || '').toLowerCase().matchAll(/#([\p{L}\p{N}_]{2,40})/gu)) if (!seen.has(m[1])) { seen.add(m[1]); cnt.set(m[1], (cnt.get(m[1]) || 0) + 1); }
+    }
+    tagCache = { at: now(), list: [...cnt.entries()].sort((a, c) => c[1] - a[1]).slice(0, 500) };
+  }
+  const s = clean(q.get('q') || '', 40).toLowerCase().replace(/^#/, '');
+  send(res, 200, { tags: tagCache.list.filter(([t]) => !s || t.startsWith(s)).slice(0, 8).map(([tag, posts]) => ({ tag, posts })) });
 });
 function getPost(pid) { const x = db.posts[pid]; if (!x) throw httpErr(404, 'Post not found'); return x; }
 function viewPost(pid, me) { // a post the caller is allowed to see (private account / block / deactivated enforced here)
   const x = getPost(pid); const owner = db.users[x.uid];
   if (!owner || (x.uid !== me.id && (gone(owner) || blockedEither(me.id, owner.id)))) throw httpErr(404, 'Post not found');
   if (!canView(me, owner)) throw httpErr(403, 'This account is private');
+  if (!postVisible(x, me)) throw httpErr(404, 'Post not found');
   return x;
 }
 route('GET', '/api/posts/:id', true, async (req, res, b, me, p) => send(res, 200, { post: postView(viewPost(p.id, me), me) }));
@@ -1076,6 +1239,7 @@ function removePost(x) {
     fs.rm(path.join(REELS_DIR, x.media), () => {}); fs.rm(path.join(REELS_DIR, posterName(x.media)), () => {});
     RI().files[x.media] = { deleted: true, at: now() };
   } else dropMedia(x.media);
+  if (x.cover) dropMedia(x.cover);
   delete db.posts[x.id]; save();
 }
 route('DELETE', '/api/posts/:id', true, async (req, res, b, me, p) => {
@@ -1101,6 +1265,7 @@ route('DELETE', '/api/posts/:id/like', true, async (req, res, b, me, p) => {
 route('POST', '/api/posts/:id/view', true, async (req, res, b, me, p) => {
   const x = viewPost(p.id, me); if (!Array.isArray(x.views)) x.views = [];
   if (x.uid !== me.id && !x.views.includes(me.id)) { x.views.push(me.id); save(); }
+  if (x.type === 'video') markReelSeen(me, x.id);
   send(res, 200, { views: x.views.length + (x.bonusViews || 0) });
 });
 route('POST', '/api/posts/:id/save', true, async (req, res, b, me, p) => {
@@ -1293,7 +1458,7 @@ route('DELETE', '/api/messages/:id', true, async (req, res, b, me, p) => {
 // ================================================================ notifications
 route('GET', '/api/notifications', true, async (req, res, b, me) => {
   const list = Object.values(db.notifs).filter(n => n.to === me.id && db.users[n.from] && !gone(db.users[n.from]) && !blockedEither(me.id, n.from)).sort((a, c) => c.created - a.created).slice(0, 60)
-    .map(n => { const pst = n.pid && db.posts[n.pid]; return { id: n.id, type: n.type, created: n.created, read: n.read, text: n.text || '', user: Object.assign(publicUser(db.users[n.from], me), { isFollowing: isFollowing(me.id, n.from), requested: (db.requests[n.from] || []).includes(me.id) }), post: pst && canView(me, db.users[pst.uid]) ? { id: pst.id, media: postMedia(pst), poster: postPoster(pst), type: pst.type } : null }; });
+    .map(n => { const pst = n.pid && db.posts[n.pid]; return { id: n.id, type: n.type, created: n.created, read: n.read, text: n.text || '', user: Object.assign(publicUser(db.users[n.from], me), { isFollowing: isFollowing(me.id, n.from), requested: (db.requests[n.from] || []).includes(me.id) }), post: pst && canView(me, db.users[pst.uid]) && postVisible(pst, me) ? { id: pst.id, media: postMedia(pst), poster: postPoster(pst), type: pst.type } : null }; });
   send(res, 200, { notifications: list, followRequests: (db.requests[me.id] || []).filter(i => db.users[i] && !gone(db.users[i])).length });
 });
 route('POST', '/api/notifications/read', true, async (req, res, b, me) => {

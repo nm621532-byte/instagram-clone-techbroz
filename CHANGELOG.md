@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.4 — 2026-11-02 · Upload editor, Classic mode, fresh feeds ✨
+- **Fresh feeds:** re-tap Home or Reels → scroll to top + new order. Every Reels open is a whole new shuffle (seeded server-side, paging never repeats), reels you already watched go after unseen ones.
+- **Reels from Home:** tap a video on Home → Reels starts at that reel and continues with more; Back returns to Home at the same scroll position.
+- **Classic mode** under Settings → Customise: flat Instagram look (no glass / blur / glow, solid backgrounds, thin borders), light + dark, saved per user, default off.
+- **Upload editor** (Post / Reel / Story): Share button top-right + sticky Save draft / Share bar (bottom nav hidden while creating), cover frame, trim, speed 0.5–2x, 11 filters, draggable coloured text, 6 royalty-free music tracks or original sound / mute, #hashtag + @mention suggestions, tag people, location, audience (everyone / followers / close friends), hide likes, comments off, drafts, upload progress bar.
+- Reel share sheet (WhatsApp / Facebook / Copy link / More) fully visible on small phones; reel actions sit above the caption; long captions clamp to 2 lines (tap to expand).
+- Server validates every new field; audience enforced on posts, feeds, profile grid, comments, likes and media files; drafts are owner-only (others get 404); tagged people get a notification.
+- Database migrated in place (schema 5, backup `db.backup-v1.3.json` written first).
+- Smoke test grows from 270 to 321 checks.
+- Android app v1.4 (versionCode 5, same signing key — installs over v1.3).
+
 ## v1.3 — 2026-11-02 · Anime reels import 🎬
 - **Reels importer** (admin only, server side): imports reel videos from an import folder + `manifest.json`, hard-linked (no copy), mp4 checked, once per file name (deleted reels are never re-imported), in batches (`?limit=`).
 - Each reel is posted by one of 240 generated "anime page" bot accounts, backdated over ~30 days, with the manifest caption, 20–800 bot likes, views and 0–5 bot comments.
