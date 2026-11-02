@@ -1,0 +1,25 @@
+{
+  "name": "instaglass",
+  "version": "1.0.0",
+  "description": "InstaGlass \u2014 liquid glass Instagram-style social app (posts, stories, reels, likes, comments, real-time DMs). Zero-dependency Node.js. Educational project by Tech Bro Z.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test/smoke.mjs http://localhost:3000"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "instagram-clone",
+    "social-media",
+    "liquid-glass",
+    "nodejs",
+    "sse",
+    "realtime-chat",
+    "stories"
+  ],
+  "author": "Tech Bro Z (YouTube @techbrozdeveloper)",
+  "license": "MIT",
+  "dependencies": {}
+}

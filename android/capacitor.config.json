@@ -1,0 +1,17 @@
+{
+  "appId": "com.techbroz.instaglass",
+  "appName": "InstaGlass",
+  "webDir": "www",
+  "android": {
+    "path": "native",
+    "allowMixedContent": false
+  },
+  "server": {
+    "url": "https://instaglass-live.sites.tab.bot",
+    "androidScheme": "https",
+    "cleartext": false,
+    "allowNavigation": [
+      "instaglass-live.sites.tab.bot"
+    ]
+  }
+}
