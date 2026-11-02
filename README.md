@@ -1,28 +1,37 @@
-# InstaGlass 📸✨ — Instagram-style clone in Liquid Glass UI
+# Private Insta 🔒📸 — Instagram-style clone in Liquid Glass UI (v1.1)
 
-**Live demo:** https://instaglass-live.sites.tab.bot  ·  demo login: `demo` / `demo1234`
-**Download:** [Android APK](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/tag/v1.0) · [Web app ZIP](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/tag/v1.0)
+**Live:** https://instaglass-live.sites.tab.bot  ·  test login: `demo` / `demo1234` (or sign up — it takes 5 seconds)
+**Download v1.1:** [Android APK](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.1/InstaGlass-v1.1.apk) · [Web app ZIP](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.1/instaglass-web-v1.1.zip) · [All releases](https://github.com/nm621532-byte/instagram-clone-techbroz/releases)
 
-> ⚠️ **Disclaimer:** Educational project by **Tech Bro Z** — not affiliated with, endorsed by, or connected to Instagram or Meta. Name, logo and design are original.
+> ⚠️ **Disclaimer:** Educational project by **Tech Bro Z**, not affiliated with Instagram/Meta. Name, logo and design are original.
+> (The repo name stays `instagram-clone-techbroz`; the app was called InstaGlass in v1.0 and is **Private Insta** from v1.1.)
 
 <p>
-<img src="docs/screenshots/02_feed.jpg" width="200"> <img src="docs/screenshots/03_story.jpg" width="200"> <img src="docs/screenshots/09_chat.jpg" width="200"> <img src="docs/screenshots/07_profile.jpg" width="200">
+<img src="docs/screenshots/v11_02_settings.jpg" width="200"> <img src="docs/screenshots/v11_09_private_profile.jpg" width="200"> <img src="docs/screenshots/v11_03_messages.jpg" width="200"> <img src="docs/screenshots/v11_07_edit_profile.jpg" width="200">
 </p>
 
-## 🇮🇳 Hinglish mein
+## 🆕 v1.1 — Settings & Privacy (Hinglish)
 
-Ye ek **poora working Instagram jaisa social app** hai — sab kuch real hai, server pe save hota hai, multi-user:
-login/signup, photo/video post, **double-tap like ❤️**, comments, **share** (DM mein post bhejo ya link copy karo), save/bookmark,
-**stories** (24 ghante baad gayab, ring + seen), **reels**, **real-time chat** (typing… dikhta hai, "Seen" bhi), notifications,
-follow/unfollow, explore + search, profile edit — aur poora UI **Apple jaisa liquid glass** (frosted blur, glass tab bar, smooth animations).
+Ab profile ke ⚙️ (gear) icon se **Settings and privacy** khulta hai — bilkul real Instagram jaisa, aur har setting **server pe enforce** hoti hai (sirf UI mein chhupaya nahi):
 
-Sabse mazedaar baat: **zero npm packages** — sirf Node.js ke built-in modules (`http`, `crypto`, `fs`). `npm install` ki zarurat hi nahi!
+- ✏️ **Edit profile** — naam, username (unique check), bio, website link, pronouns, gender (private), photo change/remove, **profile theme colour**
+- 🔒 **Private account** — non-followers ko posts, reels, stories, followers/following list nahi dikhte; follow dabane pe **Follow request** jaati hai (Confirm / Delete + notification). Purane followers bane rehte hain.
+- 💚 **Close Friends** — green ring wali story sirf close friends ko; **Hide story from** — chune hue logon se story chhupao; **story replies**: Everyone / People you follow / Off
+- 💌 **Messages** — kaun message kar sakta hai (Everyone / Followers / Nobody), anjaan logon ke message **Message requests** folder mein (Accept / Delete / Block), **read receipts** on/off, **typing indicator** on/off
+- 💬 **Comments** — Everyone / Followers / Off, har post pe "Turn off commenting" aur "Hide like count", **Hidden words** (ye words wale comments sabse chhup jaate hain)
+- ⛔ **Block** (na dhoondh sake, na dekh sake, na message, na follow) + Blocked list se Unblock · 🛡️ **Restrict** · 🔇 **Mute** posts / story
+- 🟢 **Activity status** on/off · **@mentions** kaun kar sake
+- 🔔 **Notifications** — likes, comments, follows, mentions, messages alag-alag on/off
+- 🔐 **Security** — password change (purana password zaroori, baaki sab devices logout), **Login activity**, ek device ya sab devices se logout
+- 🌗 **Theme** Auto / Dark / Light, language (Hindi jald), **Download your data** (sirf aapka data, ZIP), **Deactivate** (login karte hi wapas) aur **Delete account** (password se)
+- 👑 Owner ke liye **hidden admin panel** (role server pe check hota hai; normal user ko 403): users list, blue ✔ badge, suspend/delete, koi bhi post/comment delete, stats, aur followers/likes/comments/views **boost** (sirf dikhne wala number badhta hai — asli lists asli rehti hain)
+- 🧹 Fake demo accounts hata diye: ab feed/stories mein sirf asli users ka content aata hai
 
 ### Chalana kaise hai (2 minute)
 ```bash
 git clone https://github.com/nm621532-byte/instagram-clone-techbroz.git
 cd instagram-clone-techbroz
-node server.js          # Node 18+ chahiye
+node server.js          # Node 18+ chahiye, npm install ki zarurat nahi
 # browser mein kholo: http://localhost:3000   (demo / demo1234)
 ```
 Common errors:
@@ -32,48 +41,66 @@ Common errors:
 
 ## 🇬🇧 English
 
-A full, working Instagram-style social app with an original **liquid glass** design. Everything is real and persisted on the server.
+A full, working Instagram-style social app with an original **liquid glass** design. Everything is real and persisted on the server — **zero npm packages**, only Node.js built-ins (`http`, `crypto`, `fs`).
 
 ### Features
 - 🔐 Sign up / log in — passwords hashed with **scrypt**, server-side sessions (HttpOnly cookie), brute-force limits
-- 🏠 Feed of people you follow + suggestions, infinite scroll
-- 📷 Create posts (photo or video) with caption; edit/delete your own posts
-- ❤️ Like (double-tap heart animation), 💬 comments (delete your own / on your post), 🔖 save to a private collection
-- ✈️ Share: send a post to a friend's DMs, copy link, or the phone's share sheet
-- ⭕ Stories: 24 h expiry, gradient ring → grey when seen, tap-through viewer with progress bars, hold to pause, reply by DM, "seen by" list for your own story
-- 🎬 Reels: vertical snap-scroll video feed with like/comment/share
-- 💌 Direct messages in **real time** (Server-Sent Events): text, photos, shared posts, typing indicator, Seen, unread badges, long-press to unsend
-- 🔔 Notifications (likes, comments, follows), 🔎 explore grid + user search
-- 👤 Profiles: avatar, bio, posts grid, followers/following lists, follow/unfollow, edit profile, delete account
-- 🌗 Dark / light liquid-glass themes, Android APK
+- 🏠 Feed of people you follow + suggestions, infinite scroll · 📷 photo/video posts · ❤️ double-tap like · 💬 comments · 🔖 saves · 👁 view counts
+- ✈️ Share a post to a friend's DMs, copy link, or the phone's share sheet
+- ⭕ Stories (24 h, ring → grey when seen, Close Friends green ring, viewer list) · 🎬 Reels
+- 💌 Real-time DMs (Server-Sent Events): text, photos, shared posts, typing, Seen, unsend, **message requests**
+- 🔔 Notifications · 🔎 explore + search · 👤 profiles with website, pronouns and accent colour
+
+### Settings & privacy (v1.1) — all enforced by the server
+| Area | What you can do |
+|---|---|
+| Edit profile | name, unique username, bio, website, pronouns, gender (private), photo, profile accent colour |
+| Account privacy | private account → follow requests (approve/delete), locked profile, posts/reels/stories/lists hidden from non-followers (API + media URLs return 403) |
+| Story | hide story from people, Close Friends list (green ring), replies: everyone / people you follow / off |
+| Messages | who can message you (everyone / followers / nobody), message requests folder, read receipts, typing indicator |
+| Interactions | who can comment (everyone / followers / off), per-post comments off + hide like count, hidden words, restrict, block (+ blocked list), mute posts/stories |
+| Activity | activity status on/off, who can @mention you |
+| Notifications | likes, comments, follows, mentions, messages |
+| Security | change password (needs the old one, logs out other sessions), login activity, log out one / other / all devices |
+| Account | Auto/Dark/Light theme, language, download your data (ZIP of only your data), deactivate, delete (password) |
+| About | version, disclaimer |
 
 ### Security (per-user rules, smoke test, no IDOR)
-- Every API endpoint checks the session on the server; you can only edit/delete **your own** posts, comments, stories, messages and profile.
-- DMs are addressed as "me + other user", so nobody can read someone else's chat by changing an id; DM photos are served only to the two people in that chat.
-- Uploads are checked by their real bytes (JPG/PNG/WebP/MP4/WebM only) and size (8 MB images, 15 MB video); HTML is never injected (text is rendered as text) + strict CSP.
-- CSRF guard (custom `X-IG` header), path-traversal guard, no password hash in any response.
-- `test/smoke.mjs` — 70 checks: two users sign up, post, like, comment, story, DM both ways in real time, share a post via DM, and IDOR/auth attacks that **must fail**. Run it before every deploy:
+- Every API endpoint checks the session on the server; settings routes only ever change the **caller's** account (there is no URL with someone else's id).
+- Private accounts, blocks, Close Friends and hidden stories are checked on every read **and** on the media file URLs.
+- DMs are addressed as "me + other user"; DM photos are served only to the two people in that chat.
+- Uploads are checked by their real bytes and size; text is rendered as text + strict CSP; CSRF guard (`X-IG` header); no password hash in any response or data export.
+- `test/smoke.mjs` — **197 checks** (the 70 from v1.0 + privacy, follow requests, Close Friends, block, DM permissions, comments off, hidden words, password change, sessions, export, deactivate, "another user cannot change my settings", admin-only APIs). Run it before every deploy:
 ```bash
 node server.js &
 node test/smoke.mjs http://localhost:3000
+# optional admin checks: IG_ADMIN_USER=you IG_ADMIN_PASS=... node test/smoke.mjs http://localhost:3000
+```
+
+### Admin account (self-hosting)
+The admin panel is hidden and every admin API checks the role on the server (others get 403), plus a password re-check that unlocks it for 30 minutes. To make an admin on your own server, pass a **password hash** (never the password) in `ADMIN_BOOTSTRAP`:
+```bash
+SALT=$(node -e "console.log(require('crypto').randomBytes(16).toString('hex'))")
+HASH=$(node -e "console.log(require('crypto').scryptSync(process.argv[1], process.argv[2], 64).toString('hex'))" 'your-strong-password' $SALT)
+ADMIN_BOOTSTRAP="{\"username\":\"admin\",\"salt\":\"$SALT\",\"pass\":\"$HASH\"}" node server.js
 ```
 
 ### Project structure
 ```
-server.js        # HTTP server + REST API + realtime stream (no dependencies)
-seed.js          # demo users/posts/stories so the app isn't empty
+server.js        # HTTP server + REST API + realtime stream + settings/privacy rules (no dependencies)
+seed.js          # creates one plain test login (demo / demo1234); upgrades remove the old v1.0 fake accounts
 public/          # index.html, app.css (liquid glass), app.js (single-page app)
-seed/            # demo images (Lorem Picsum / Unsplash, free to use)
-test/smoke.mjs   # smoke + security test
+test/smoke.mjs   # smoke + security test (197 checks)
 android/         # Capacitor shell for the APK
-.github/         # workflow that attaches the APK + ZIP to the release
-
+release/         # SHA-256 of each signed APK
+.github/         # workflow that attaches the APK + ZIP to each release
 ```
 
-### Download (Release v1.0)
-- Android APK: https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.0/InstaGlass-v1.0.apk  (mirror: https://instaglass-live.sites.tab.bot/InstaGlass-v1.0.apk)
-- Web app ZIP: https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.0/instaglass-web-v1.0.zip  (or the green Code → Download ZIP button)
-- APK SHA-256: `7dd70973e7bf9ec1d6ba990135f3cbd00408e68b2cbeffb952507781c2f2d48f`
+### Download (Release v1.1)
+- Android APK: https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.1/InstaGlass-v1.1.apk (mirror: https://instaglass-live.sites.tab.bot/InstaGlass-v1.1.apk) — installs over v1.0 (same signature, versionCode 2)
+- Web app ZIP: https://github.com/nm621532-byte/instagram-clone-techbroz/releases/download/v1.1/instaglass-web-v1.1.zip
+- APK SHA-256: `20d17dbe65bed9d97ecd4c85506711abfeab00b00f9ae4dd3b1b28abaf49f6bb`
+- Older: [v1.0](https://github.com/nm621532-byte/instagram-clone-techbroz/releases/tag/v1.0)
 
 ---
 Made by **Tech Bro Z** — YouTube [@techbrozdeveloper](https://www.youtube.com/@techbrozdeveloper) · Instagram [@tech_bro_z_1](https://www.instagram.com/tech_bro_z_1/)

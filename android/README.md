@@ -1,6 +1,6 @@
-# InstaGlass Android app (Capacitor)
+# Private Insta Android app (Capacitor)
 
-The APK is a thin native shell around the live InstaGlass server (`server.url` in `capacitor.config.json`), so posts, stories and chats are the same as on the website.
+The APK is a thin native shell around the live Private Insta server (`server.url` in `capacitor.config.json`), so posts, stories and chats are the same as on the website.
 
 ```bash
 cd android

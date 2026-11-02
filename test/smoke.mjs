@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// InstaGlass smoke + security test. Run before EVERY publish:
+// Private Insta (InstaGlass) smoke + security test, v1.1. Run before EVERY publish:
 //   node test/smoke.mjs http://localhost:3000        (or the live URL)
 // Creates throwaway users (random names), exercises every feature, then tries IDOR / auth attacks that MUST fail.
 const BASE = (process.argv[2] || 'http://localhost:3000').replace(/\/$/, '');
@@ -41,7 +41,7 @@ const wait = (ms) => new Promise(r => setTimeout(r, ms));
 async function waitFor(fn, ms = 6000) { const t = Date.now(); while (Date.now() - t < ms) { if (fn()) return true; await wait(100); } return false; }
 
 (async () => {
-  console.log('InstaGlass smoke test against ' + BASE);
+  console.log('Private Insta smoke test against ' + BASE);
   const A = new Client('a'), Bc = new Client('b'), C = new Client('c');
   const ua = 'ta_' + rnd, ub = 'tb_' + rnd, uc = 'tc_' + rnd, pw = 'test-pass-' + rnd;
   console.log('— accounts');
@@ -124,14 +124,214 @@ async function waitFor(fn, ms = 6000) { const t = Date.now(); while (Date.now() 
   ok((await forged.get('/api/me')).status === 401, 'forged session token rejected');
   const trav = await fetch(BASE + '/%2e%2e/server.js'); const travText = await trav.text(); ok(!travText.includes('require('), 'path traversal does not leak server code');
 
+  
+  // ================================================================ v1.1: settings / privacy / safety
+  const D = new Client('d'); const ud = 'td_' + rnd;
+  ok((await D.post('/api/signup', { username: ud, password: pw, name: 'Test D' })).status === 201, 'signup user D (stranger)');
+  const JPG2 = JPG;
+
+  console.log('— v1.1 edit profile');
+  ok((await C.put('/api/me', { username: ua })).status === 409, 'username already taken is rejected');
+  ok((await C.put('/api/me', { username: 'Bad Name!' })).status === 400, 'invalid username is rejected');
+  ok((await C.put('/api/me', { website: 'javascript:alert(1)' })).status === 400, 'bad website link rejected');
+  const ucNew = 'tc2_' + rnd;
+  const ed = await C.put('/api/me', { username: ucNew, website: 'example.com', pronouns: 'he/him', gender: 'male', accent: '#22d3ee', name: 'Test C2' });
+  ok(ed.status === 200 && ed.data.user.username === ucNew && ed.data.user.website === 'https://example.com' && ed.data.user.accent === '#22d3ee', 'C edits username, website, pronouns, gender, accent');
+  const vC = await A.get('/api/users/' + ucNew); ok(vC.status === 200 && vC.data.user.pronouns === 'he/him' && vC.data.user.gender === undefined, 'others see pronouns but not gender');
+  ok((await A.get('/api/users/' + uc)).status === 404, 'old username no longer resolves');
+  const uc2 = ucNew;
+  ok((await C.put('/api/me', { accent: 'red;}' })).status === 400, 'invalid accent colour rejected');
+
+  console.log('— v1.1 private account + follow requests');
+  const pA = await A.post('/api/posts', { media: JPG2, caption: 'private post ' + rnd }); const ppid = pA.data.post.id;
+  const ppMedia = new URL(pA.data.post.media, BASE).pathname;
+  ok((await C.get(ppMedia)).status === 200, 'public account: C can open A photo');
+  ok((await A.put('/api/settings', { private: true })).data.settings.private === true, 'A switches to a private account');
+  const lockedView = await C.get('/api/users/' + ua);
+  ok(lockedView.status === 200 && lockedView.data.user.locked === true && lockedView.data.posts.length === 0, 'non-follower C sees a locked profile with no posts');
+  ok((await C.get('/api/posts/' + ppid)).status === 403, 'C cannot open A post by id');
+  ok((await C.get(ppMedia)).status === 403, 'C cannot open A photo URL');
+  ok((await C.get('/api/posts/' + ppid + '/comments')).status === 403, 'C cannot read A post comments');
+  ok((await C.post('/api/posts/' + ppid + '/like')).status === 403, 'C cannot like A post');
+  ok((await C.get('/api/users/' + ua + '/followers')).status === 403 && (await C.get('/api/users/' + ua + '/following')).status === 403, 'C cannot see A followers/following lists');
+  ok(!(await C.get('/api/explore?limit=30')).data.posts.some(p => p.user.username === ua), 'A posts are not in C explore');
+  ok((await Bc.get('/api/posts/' + ppid)).status === 200 && (await Bc.get(ppMedia)).status === 200, 'existing follower B still sees A posts');
+  const fr = await C.post('/api/users/' + ua + '/follow'); ok(fr.data.requested === true && fr.data.following === false, 'C follow becomes a follow request');
+  ok((await A.get('/api/requests')).data.requests.some(u => u.username === uc2), 'A sees C in follow requests');
+  ok((await A.get('/api/notifications')).data.notifications.some(n => n.type === 'request' && n.user.username === uc2), 'A got a follow-request notification');
+  ok((await Bc.post('/api/requests/' + uc2 + '/accept')).status === 404, 'B cannot accept a request sent to A');
+  ok((await C.get('/api/posts/' + ppid)).status === 403, 'still locked while the request is pending');
+  ok((await A.post('/api/requests/' + uc2 + '/accept')).status === 200, 'A accepts C request');
+  ok((await C.get('/api/posts/' + ppid)).status === 200 && (await C.get(ppMedia)).status === 200, 'after accept C sees A post + photo');
+  ok((await C.get('/api/users/' + ua)).data.user.locked === false, 'A profile unlocked for C');
+  ok((await D.post('/api/users/' + ua + '/follow')).data.requested === true && (await A.req('DELETE', '/api/requests/' + ud)).status === 200, 'A declines D request');
+  ok((await D.get('/api/posts/' + ppid)).status === 403, 'declined D still locked out');
+
+  console.log('— v1.1 stories: close friends, hide story, replies');
+  const cf = await A.post('/api/stories', { media: JPG2, closeFriends: true }); const cfid = cf.data.story.id;
+  ok(cf.status === 201 && cf.data.story.close === true, 'A posts a Close Friends story');
+  ok(!(await Bc.get('/api/stories/' + ua)).data.stories.some(s => s.id === cfid), 'B (not close friend) cannot see it');
+  ok((await Bc.post('/api/stories/' + cfid + '/seen')).status === 403, 'B cannot open it by id');
+  ok((await Bc.get(new URL(cf.data.story.media, BASE).pathname)).status === 403, 'B cannot open its media URL');
+  ok((await A.post('/api/close-friends/' + ub)).status === 200, 'A adds B to Close Friends');
+  ok((await Bc.get('/api/stories/' + ua)).data.stories.some(s => s.id === cfid && s.close), 'now B sees the green-ring story');
+  ok((await Bc.get('/api/stories')).data.tray.some(u => u.username === ua && u.closeStory), 'B tray marks it as Close Friends');
+  ok((await Bc.post('/api/stories/' + cfid + '/reply', { text: 'nice' })).status === 201, 'B replies to the story');
+  ok((await A.put('/api/settings', { storyReplies: 'off' })).status === 200 && (await Bc.post('/api/stories/' + cfid + '/reply', { text: 'again' })).status === 403, 'story replies off -> reply rejected');
+  const ns = await A.post('/api/stories', { media: JPG2 });
+  ok((await A.post('/api/story-hide/' + ub)).status === 200 && (await Bc.get('/api/stories/' + ua)).data.stories.length === 0, 'hide story from B -> B sees no A stories');
+  ok((await Bc.post('/api/stories/' + ns.data.story.id + '/seen')).status === 403, 'hidden B cannot open A story by id');
+  ok((await C.get('/api/stories/' + ua)).data.stories.some(s => s.id === ns.data.story.id), 'C (follower) still sees the normal story');
+  await A.del('/api/story-hide/' + ub);
+
+  console.log('— v1.1 messages: permissions, requests, receipts');
+  ok((await A.put('/api/settings', { dmFrom: 'followers' })).status === 200, 'A: only followers can message directly');
+  const dmD = await D.post('/api/dm/' + ua, { text: 'hello stranger ' + rnd });
+  ok(dmD.status === 201 && dmD.data.request === true, 'stranger D message lands as a request');
+  ok(!(await A.get('/api/inbox')).data.conversations.some(c => c.user.username === ud), 'D is not in A main inbox');
+  ok((await A.get('/api/inbox/requests')).data.conversations.some(c => c.user.username === ud), 'D is in A Message requests');
+  ok((await A.get('/api/dm/' + ud)).data.isRequest === true, 'A opens it as a request');
+  ok((await D.get('/api/dm/' + ua)).data.messages.every(m => !m.seen), 'opening a request does not send "Seen"');
+  ok((await Bc.post('/api/dm/' + ud + '/accept')).status === 404, 'B cannot accept a request in A inbox');
+  ok((await A.post('/api/dm/' + ud + '/accept')).status === 200 && (await A.get('/api/inbox')).data.conversations.some(c => c.user.username === ud), 'A accepts -> chat moves to inbox');
+  ok((await A.put('/api/settings', { dmFrom: 'nobody' })).status === 200, 'A: nobody can message');
+  const E = new Client('e'); const ue = 'te_' + rnd; await E.post('/api/signup', { username: ue, password: pw });
+  ok((await E.post('/api/dm/' + ua, { text: 'hi' })).status === 403, 'nobody -> new stranger E is refused');
+  ok((await D.post('/api/dm/' + ua, { text: 'still ok?' })).status === 201, 'already-accepted chat keeps working');
+  await A.put('/api/settings', { dmFrom: 'everyone' });
+  ok((await A.put('/api/settings', { readReceipts: false })).status === 200, 'A turns read receipts off');
+  const rr = await Bc.post('/api/dm/' + ua, { text: 'receipt test' }); await A.get('/api/dm/' + ub);
+  ok((await Bc.get('/api/dm/' + ua)).data.messages.find(m => m.id === rr.data.message.id).seen === false, 'B does not see "Seen" when receipts are off');
+  await A.put('/api/settings', { readReceipts: true, typing: false });
+  const sAt = stream(A); await sAt.ready; await wait(300);
+  await Bc.put('/api/settings', { typing: false }); await Bc.post('/api/dm/' + ua + '/typing'); await wait(700);
+  ok(!sAt.events.some(e => e.type === 'typing'), 'typing indicator off -> nothing pushed');
+  sAt.close(); await Bc.put('/api/settings', { typing: true }); await A.put('/api/settings', { typing: true });
+  await Bc.put('/api/settings', { activityStatus: false });
+  ok((await A.get('/api/dm/' + ub)).data.user.online === false && (await A.get('/api/dm/' + ub)).data.user.lastActive === null, 'activity status off -> online/last active hidden');
+
+  console.log('— v1.1 comments: off, who can comment, hidden words, likes hidden, restrict');
+  ok((await A.put('/api/posts/' + ppid, { commentsOff: true })).data.post.commentsOff === true, 'A turns off commenting on a post');
+  ok((await Bc.post('/api/posts/' + ppid + '/comments', { text: 'hi' })).status === 403, 'comment on a comments-off post is rejected');
+  await A.put('/api/posts/' + ppid, { commentsOff: false });
+  await A.put('/api/settings', { commentsFrom: 'off' });
+  ok((await Bc.post('/api/posts/' + ppid + '/comments', { text: 'hi' })).status === 403, 'account-wide comments off rejects comments');
+  await A.put('/api/settings', { commentsFrom: 'followers' });
+  ok((await Bc.post('/api/posts/' + ppid + '/comments', { text: 'follower comment' })).status === 201, 'followers-only: follower B can comment');
+  ok((await A.put('/api/settings', { hiddenWords: ['spamword', 'Bad'] })).data.settings.hiddenWords.includes('bad'), 'A sets hidden words');
+  const hc = await Bc.post('/api/posts/' + ppid + '/comments', { text: 'buy SPAMWORD now' });
+  ok(hc.status === 201 && hc.data.comment.hidden === true, 'comment with a hidden word is stored as hidden');
+  ok(!(await C.get('/api/posts/' + ppid + '/comments')).data.comments.some(c => c.id === hc.data.comment.id), 'hidden comment is invisible to others');
+  ok((await Bc.get('/api/posts/' + ppid + '/comments')).data.comments.some(c => c.id === hc.data.comment.id), 'the writer still sees it');
+  await Bc.post('/api/posts/' + ppid + '/like');
+  ok((await A.put('/api/posts/' + ppid, { hideLikes: true })).status === 200 && (await C.get('/api/posts/' + ppid)).data.post.likes === null, 'hide like count -> others get no number');
+  ok((await A.get('/api/posts/' + ppid)).data.post.likes >= 1, 'owner still sees the like count');
+  ok((await A.post('/api/users/' + ub + '/restrict')).status === 200, 'A restricts B');
+  const rc = await Bc.post('/api/posts/' + ppid + '/comments', { text: 'restricted comment' });
+  ok(!(await C.get('/api/posts/' + ppid + '/comments')).data.comments.some(c => c.id === rc.data.comment.id), 'restricted B comment hidden from others');
+  await A.del('/api/users/' + ub + '/restrict'); await A.put('/api/settings', { commentsFrom: 'everyone' });
+
+  console.log('— v1.1 block, mute, mentions, notification prefs, views');
+  ok((await A.post('/api/users/' + uc2 + '/block')).status === 200, 'A blocks C');
+  ok((await C.get('/api/users/' + ua)).status === 404, 'blocked C cannot find A profile');
+  ok(!(await C.get('/api/search?q=' + ua)).data.users.some(u => u.username === ua), 'blocked C cannot find A in search');
+  ok((await C.get('/api/posts/' + ppid)).status === 404 && (await C.get(ppMedia)).status === 403, 'blocked C cannot view A post or photo');
+  ok([403, 404].includes((await C.post('/api/dm/' + ua, { text: 'hey' })).status), 'blocked C cannot message A');
+  ok((await C.post('/api/users/' + ua + '/follow')).status === 404, 'blocked C cannot follow A');
+  ok((await A.get('/api/settings/lists')).data.blocked.some(u => u.username === uc2), 'C is in A blocked list');
+  ok((await A.del('/api/users/' + uc2 + '/block')).status === 200 && (await C.get('/api/users/' + ua)).status === 200, 'unblock restores access to the profile');
+  ok((await A.put('/api/users/' + ub + '/mute', { posts: true })).data.muted.posts === true, 'A mutes B posts');
+  const bp = await Bc.post('/api/posts', { media: JPG2, caption: 'b post' });
+  ok(!(await A.get('/api/feed?limit=30')).data.posts.some(p => p.id === bp.data.post.id), 'muted B post not in A feed');
+  await A.put('/api/users/' + ub + '/mute', { posts: false });
+  await Bc.put('/api/settings', { mentionsFrom: 'nobody' });
+  const mp = await A.post('/api/posts', { media: JPG2, caption: 'hey @' + ub });
+  ok(mp.data.mentionBlocked.includes(ub), 'mentions off -> B cannot be mentioned');
+  await A.put('/api/settings', { notif: { likes: false } });
+  const before = (await A.get('/api/notifications')).data.notifications.filter(n => n.type === 'like').length;
+  await Bc.post('/api/posts/' + mp.data.post.id + '/like');
+  ok((await A.get('/api/notifications')).data.notifications.filter(n => n.type === 'like').length === before, 'likes notifications off -> no new like notification');
+  ok((await Bc.post('/api/posts/' + mp.data.post.id + '/view')).data.views === 1, 'post view is counted once per viewer');
+
+  console.log('— v1.1 settings belong to their owner (no IDOR)');
+  await Bc.put('/api/settings', { private: true, dmFrom: 'nobody' });
+  const setA = (await A.get('/api/settings')).data.settings;
+  ok(setA.private === true && setA.dmFrom === 'everyone', 'B changing settings never touches A settings');
+  ok((await Bc.put('/api/users/' + ua + '/settings', { private: false })).status === 404, 'no route to change another user settings');
+  ok((await Bc.put('/api/settings', { private: 'yes' })).status === 400 && (await Bc.put('/api/settings', { dmFrom: 'hackers' })).status === 400, 'invalid setting values rejected');
+  ok((await new Client('anon').req('PUT', '/api/settings', { private: false })).status === 401, 'logged-out visitor cannot change settings');
+  await Bc.put('/api/settings', { private: false, dmFrom: 'everyone', mentionsFrom: 'everyone', activityStatus: true });
+
+  console.log('— v1.1 data export');
+  const ex = await fetch(BASE + '/api/me/export', { headers: { Cookie: A.cookie } }); const zb = Buffer.from(await ex.arrayBuffer());
+  ok(ex.status === 200 && (ex.headers.get('content-type') || '').includes('zip') && zb.slice(0, 2).toString() === 'PK', 'A downloads a zip of own data');
+  ok(zb.includes(Buffer.from(ua)) && zb.includes(Buffer.from('private post ' + rnd)), 'zip has A profile + posts');
+  ok(!zb.includes(Buffer.from('test-pass-')) && !zb.includes(Buffer.from('"pass"')), 'zip never contains passwords/hashes');
+  ok((await new Client('anon').get('/api/me/export')).status === 401, 'export needs login');
+
+  console.log('— v1.1 security: password change + sessions');
+  const A2 = new Client('a2'); await A2.post('/api/login', { username: ua, password: pw });
+  const ses = await A.get('/api/me/sessions'); ok(ses.data.sessions.length >= 2 && ses.data.sessions.some(s => s.current) && ses.data.logins.length >= 2, 'login activity lists A devices');
+  ok(!JSON.stringify(ses.data).includes(A2.cookie.split('=')[1]), 'session list never exposes tokens');
+  ok((await A.post('/api/me/password', { oldPassword: 'wrong', newPassword: 'whatever1' })).status === 401, 'change password needs the old password');
+  const pw2 = pw + 'X';
+  ok((await A.post('/api/me/password', { oldPassword: pw, newPassword: pw2 })).status === 200, 'A changes password');
+  ok((await A2.get('/api/me')).status === 401, 'other old session is logged out');
+  ok((await A.get('/api/me')).status === 200, 'current session stays logged in');
+  ok((await new Client('x').post('/api/login', { username: ua, password: pw })).status === 401, 'old password no longer works');
+  const A3 = new Client('a3'); ok((await A3.post('/api/login', { username: ua, password: pw2 })).status === 200, 'new password works');
+  ok((await A.post('/api/me/logout-others')).data.loggedOut >= 1 && (await A3.get('/api/me')).status === 401, 'log out other devices');
+  const A4 = new Client('a4'); await A4.post('/api/login', { username: ua, password: pw2 });
+  const sid4 = (await A.get('/api/me/sessions')).data.sessions.find(s => !s.current).id;
+  ok((await Bc.req('DELETE', '/api/me/sessions/' + sid4)).status === 404, 'B cannot end A session');
+  ok((await A.req('DELETE', '/api/me/sessions/' + sid4)).status === 200 && (await A4.get('/api/me')).status === 401, 'A ends one session from login activity');
+
+  console.log('— v1.1 deactivate');
+  ok((await D.post('/api/me/deactivate', { password: 'nope' })).status === 401, 'deactivate needs the password');
+  ok((await D.post('/api/me/deactivate', { password: pw })).status === 200 && (await D.get('/api/me')).status === 401, 'D deactivates (logged out)');
+  ok((await A.get('/api/users/' + ud)).status === 404 && !(await A.get('/api/search?q=' + ud)).data.users.length, 'deactivated D is hidden');
+  const Dl = await D.post('/api/login', { username: ud, password: pw }); ok(Dl.status === 200 && Dl.data.reactivated === true, 'logging in again reactivates D');
+  ok((await A.get('/api/users/' + ud)).status === 200, 'D visible again');
+
+  console.log('— v1.1 admin panel is admin-only');
+  for (const [m, u] of [['GET', '/api/admin/stats'], ['GET', '/api/admin/users'], ['PUT', '/api/admin/users/' + ub], ['PUT', '/api/admin/posts/' + ppid], ['DELETE', '/api/admin/posts/' + ppid], ['POST', '/api/admin/reset-boosts']])
+    ok((await Bc.req(m, u, m === 'GET' ? undefined : { verified: true, addLikes: 5 })).status === 403, 'normal user: ' + m + ' ' + u + ' -> 403');
+  ok((await Bc.post('/api/admin/unlock', { password: pw })).status === 403, 'normal user cannot unlock the admin panel');
+  ok((await A.get('/api/posts/' + ppid)).status === 200, 'post untouched by those attempts');
+  const AU = process.env.IG_ADMIN_USER, AP = process.env.IG_ADMIN_PASS;
+  if (AU && AP) {
+    const M = new Client('admin'); ok((await M.post('/api/login', { username: AU, password: AP })).status === 200, 'admin logs in');
+    ok((await M.get('/api/admin/stats')).status === 401, 'admin panel locked until password re-check');
+    ok((await M.post('/api/admin/unlock', { password: 'wrong' })).status === 401, 'unlock with a wrong password fails');
+    ok((await M.post('/api/admin/unlock', { password: AP })).status === 200, 'admin unlocks the panel');
+    ok((await M.get('/api/admin/stats')).data.stats.users >= 4, 'admin sees stats');
+    const realF = (await A.get('/api/users/' + ua + '/followers')).data.users.length;
+    ok((await M.put('/api/admin/users/' + ua, { addFollowers: 100, verified: true })).data.user.bonusFollowers === 100, 'admin boosts A followers +100 and verifies A');
+    const pv = (await C.get('/api/users/' + ua)).data.user; ok(pv.followers === realF + 100 && pv.verified === true, 'profile shows real followers + boost and the badge');
+    ok((await A.get('/api/users/' + ua + '/followers')).data.users.length === realF, 'real follower list stays real');
+    await M.put('/api/admin/posts/' + mp.data.post.id, { addLikes: 50, addViews: 1000, addComments: 7 });
+    const bpv = (await Bc.get('/api/posts/' + mp.data.post.id)).data.post; ok(bpv.likes >= 51 && bpv.views === 1001 && bpv.comments === 7, 'admin boosts post likes/views/comments');
+    ok((await M.post('/api/admin/reset-boosts', { username: ua })).status === 200 && (await Bc.get('/api/posts/' + mp.data.post.id)).data.post.views === 1, 'admin resets boosts to 0');
+    await M.put('/api/admin/users/' + ua, { verified: false });
+    ok((await M.put('/api/admin/users/' + ud, { suspended: true })).status === 200 && (await D.get('/api/me')).status === 401, 'admin suspends D (logged out)');
+    ok((await new Client('x').post('/api/login', { username: ud, password: pw })).status === 403, 'suspended D cannot log in');
+    ok((await M.put('/api/admin/users/' + ud, { suspended: false })).status === 200 && (await D.post('/api/login', { username: ud, password: pw })).status === 200, 'admin un-suspends D');
+    ok((await M.req('DELETE', '/api/admin/comments/' + hc.data.comment.id)).status === 200, 'admin deletes any comment');
+    ok((await M.req('DELETE', '/api/admin/posts/' + bp.data.post.id)).status === 200 && (await Bc.get('/api/posts/' + bp.data.post.id)).status === 404, 'admin deletes any post');
+    await M.post('/api/logout');
+  } else console.log('  (admin positive checks skipped: set IG_ADMIN_USER / IG_ADMIN_PASS)');
+  await A.put('/api/settings', { private: false, notif: { likes: true } });
+  for (const [cl] of [[D], [E]]) await cl.req('DELETE', '/api/me', { password: pw });
+
   console.log('— cleanup');
   ok((await Bc.del('/api/messages/' + share.data.message.id)).status === 200, 'B unsends own message');
   ok((await A.del('/api/stories/' + sid)).status === 200, 'A deletes own story');
   ok((await A.del('/api/posts/' + pid)).status === 200, 'A deletes own post');
   ok((await A.req('DELETE', '/api/me', { password: 'wrong' })).status === 401, 'delete account needs the right password');
   ok((await A.post('/api/logout')).status === 200 && (await A.get('/api/me')).status === 401, 'logout ends the session');
-  await A.post('/api/login', { username: ua, password: pw });
-  for (const [cl, n] of [[A, ua], [Bc, ub], [C, uc]]) ok((await cl.req('DELETE', '/api/me', { password: pw })).status === 200, 'test account ' + n + ' deleted');
+  await A.post('/api/login', { username: ua, password: pw + 'X' });
+  ok((await A.req('DELETE', '/api/me', { password: pw + 'X' })).status === 200, 'test account ' + ua + ' deleted');
+  for (const [cl, n] of [[Bc, ub], [C, uc]]) ok((await cl.req('DELETE', '/api/me', { password: pw })).status === 200, 'test account ' + n + ' deleted');
   ok((await relog.get('/api/me')).status === 401, 'other sessions of a deleted account stop working');
 
   console.log(`\n${fail ? '❌' : '✅'} ${pass} passed, ${fail} failed`);

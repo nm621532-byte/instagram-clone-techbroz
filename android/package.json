@@ -2,7 +2,7 @@
   "name": "instaglass-android",
   "version": "1.0.0",
   "private": true,
-  "description": "InstaGlass Android app: Capacitor shell that opens the live InstaGlass server. Educational project by Tech Bro Z, not affiliated with Instagram/Meta.",
+  "description": "Private Insta Android app: Capacitor shell that opens the live Private Insta server. Educational project by Tech Bro Z, not affiliated with Instagram/Meta.",
   "scripts": {
     "sync": "npx cap sync android",
     "build:release": "npx cap sync android && cd native && ./gradlew assembleRelease"

@@ -1,11 +1,15 @@
-// InstaGlass — a liquid-glass Instagram-style social app (educational project by Tech Bro Z).
+// Private Insta — a liquid-glass Instagram-style social app (educational project by Tech Bro Z).
 // Not affiliated with Instagram or Meta. Zero dependencies: only Node.js built-ins (Node 18+).
+// v1.1: settings + privacy (private account, follow requests, close friends, block/restrict/mute,
+// message requests, hidden words, comment controls, read receipts, sessions, data export, admin panel).
 'use strict';
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
+const VERSION = '1.1.0';
+const APP_NAME = 'Private Insta';
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, 'data'));
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -18,27 +22,59 @@ const MAX_VIDEO = 15 * 1024 * 1024;          // decoded video bytes
 fs.mkdirSync(MEDIA_DIR, { recursive: true });
 
 // ---------------------------------------------------------------- database (JSON file)
-let db = { users: {}, sessions: {}, follows: {}, posts: {}, comments: {}, stories: {}, messages: {}, notifs: {}, media: {} };
+let db = { users: {}, sessions: {}, follows: {}, posts: {}, comments: {}, stories: {}, messages: {}, notifs: {}, media: {}, requests: {}, accepted: null };
 if (fs.existsSync(DB_FILE)) {
   try { db = Object.assign(db, JSON.parse(fs.readFileSync(DB_FILE, 'utf8'))); } catch (e) { console.error('db read failed', e.message); }
 }
 let saveTimer = null;
+function writeNow() { const tmp = DB_FILE + '.tmp'; fs.writeFileSync(tmp, JSON.stringify(db)); fs.renameSync(tmp, DB_FILE); }
 function save() {
   if (saveTimer) return;
-  saveTimer = setTimeout(() => {
-    saveTimer = null;
-    const tmp = DB_FILE + '.tmp';
-    fs.writeFileSync(tmp, JSON.stringify(db));
-    fs.renameSync(tmp, DB_FILE);
-  }, 300);
+  saveTimer = setTimeout(() => { saveTimer = null; writeNow(); }, 300);
 }
-function flushSave() { if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; fs.writeFileSync(DB_FILE + '.tmp', JSON.stringify(db)); fs.renameSync(DB_FILE + '.tmp', DB_FILE); } }
+function flushSave() { if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; writeNow(); } }
 process.on('SIGTERM', () => { flushSave(); process.exit(0); });
 process.on('SIGINT', () => { flushSave(); process.exit(0); });
 
 const id = (n = 12) => crypto.randomBytes(n).toString('hex');
 const now = () => Date.now();
 const sha = s => crypto.createHash('sha256').update(s).digest('hex');
+
+// ---------------------------------------------------------------- settings model (v1.1) + migration of v1.0 data
+const DEFAULT_SETTINGS = {
+  private: false,                 // private account: only approved followers see posts, reels, stories, follower lists
+  storyReplies: 'everyone',       // everyone | following (people you follow) | off
+  dmFrom: 'everyone',             // everyone | followers | nobody   (others land in Message requests / are refused)
+  readReceipts: true, typing: true,
+  commentsFrom: 'everyone',       // everyone | followers | off
+  hiddenWords: [],
+  activityStatus: true,
+  mentionsFrom: 'everyone',       // everyone | followers | nobody
+  notif: { likes: true, comments: true, follows: true, messages: true, mentions: true },
+  theme: 'auto', language: 'en',
+};
+const LIST_KEYS = ['blocked', 'restricted', 'closeFriends', 'storyHidden', 'mutedPosts', 'mutedStories'];
+function settingsOf(u) {
+  if (!u.settings || typeof u.settings !== 'object') u.settings = {};
+  const s = u.settings;
+  for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) {
+    if (s[k] === undefined) s[k] = Array.isArray(v) ? [] : (typeof v === 'object' ? Object.assign({}, v) : v);
+  }
+  for (const [k, v] of Object.entries(DEFAULT_SETTINGS.notif)) if (typeof s.notif[k] !== 'boolean') s.notif[k] = v;
+  return s;
+}
+function L(u) { for (const k of LIST_KEYS) if (!Array.isArray(u[k])) u[k] = []; return u; }
+function migrate() {
+  let changed = false;
+  if (!db.requests || typeof db.requests !== 'object') { db.requests = {}; changed = true; }
+  if (!db.accepted || typeof db.accepted !== 'object') { // every v1.0 conversation counts as accepted (nothing moves to Requests)
+    db.accepted = {}; for (const m of Object.values(db.messages)) db.accepted[m.conv] = true; changed = true;
+  }
+  for (const u of Object.values(db.users)) { if (!u.settings) changed = true; settingsOf(u); L(u); if (!Array.isArray(u.logins)) u.logins = []; }
+  for (const p of Object.values(db.posts)) { if (p.commentsOff === undefined) { p.commentsOff = false; p.hideLikes = false; changed = true; } }
+  if ((db.schema || 1) < 2) { db.schema = 2; changed = true; }
+  if (changed) save();
+}
 
 // ---------------------------------------------------------------- helpers
 function hashPassword(pw, salt) { return crypto.scryptSync(pw, salt, 64).toString('hex'); }
@@ -53,40 +89,114 @@ function userByName(name) { name = String(name || '').toLowerCase(); return Obje
 function following(uid) { return db.follows[uid] || (db.follows[uid] = []); }
 function followers(uid) { return Object.keys(db.follows).filter(k => (db.follows[k] || []).includes(uid)); }
 function convKey(a, b) { return [a, b].sort().join(':'); }
+const isFollowing = (a, b) => following(a).includes(b);              // a follows b
+const gone = (u) => !u || u.deactivated || u.suspended;               // hidden from everyone else
+function blockedEither(a, b) {
+  const ua = db.users[a], ub = db.users[b];
+  return !!((ua && L(ua).blocked.includes(b)) || (ub && L(ub).blocked.includes(a)));
+}
+function canView(viewer, owner) { // posts, reels, follower lists of `owner`
+  if (!owner) return false;
+  if (viewer.id === owner.id) return true;
+  if (gone(owner) || blockedEither(viewer.id, owner.id)) return false;
+  return !settingsOf(owner).private || isFollowing(viewer.id, owner.id);
+}
+// look up a user the way another user may see them: deactivated/suspended or "they blocked me" = does not exist
+function visibleUser(name, me) {
+  const u = userByName(name);
+  if (!u || (u.id !== me.id && (gone(u) || L(u).blocked.includes(me.id)))) throw httpErr(404, 'User not found');
+  return u;
+}
+function followerCount(u) { return followers(u.id).filter(i => !gone(db.users[i])).length + (u.bonusFollowers || 0); }
 
 function mediaUrl(file) { return file ? '/media/' + file : null; }
+function activeStories(uid) { const t = now(); return Object.values(db.stories).filter(s => s.uid === uid && t - s.created < STORY_TTL).sort((a, b) => a.created - b.created); }
+function storyVisible(s, viewer) {
+  const owner = db.users[s.uid]; if (!owner) return false;
+  if (owner.id === viewer.id) return true;
+  if (gone(owner) || blockedEither(viewer.id, owner.id)) return false;
+  if (!isFollowing(viewer.id, owner.id)) return false;                 // stories: followers only (private or public)
+  if (L(owner).storyHidden.includes(viewer.id)) return false;          // "Hide story from"
+  if (s.close && !L(owner).closeFriends.includes(viewer.id)) return false; // Close Friends story
+  return true;
+}
+function storiesFor(uid, viewer) { return activeStories(uid).filter(s => storyVisible(s, viewer)); }
 function publicUser(u, me) {
   if (!u) return null;
-  const o = { id: u.id, username: u.username, name: u.name, avatar: mediaUrl(u.avatar), verified: !!u.verified };
+  const o = { id: u.id, username: u.username, name: u.name, avatar: mediaUrl(u.avatar), verified: !!u.verified, accent: u.accent || null, isPrivate: !!(u.settings && u.settings.private) };
   if (me) {
-    o.hasStory = activeStories(u.id).length > 0;
-    o.storySeen = o.hasStory && activeStories(u.id).every(s => s.seen.includes(me.id));
+    const st = storiesFor(u.id, me);
+    o.hasStory = st.length > 0;
+    o.storySeen = o.hasStory && st.every(s => s.seen.includes(me.id));
+    o.closeStory = st.some(s => s.close && !s.seen.includes(me.id)) || (o.hasStory && st.every(s => s.close));
   }
   return o;
 }
-function activeStories(uid) { const t = now(); return Object.values(db.stories).filter(s => s.uid === uid && t - s.created < STORY_TTL).sort((a, b) => a.created - b.created); }
+function hiddenFor(c, post, viewer) { // comment visibility
+  const author = db.users[c.uid];
+  if (!author || gone(author) && c.uid !== viewer.id) return true;
+  if (blockedEither(viewer.id, c.uid)) return true;
+  if ((c.hidden || c.restricted) && c.uid !== viewer.id && post.uid !== viewer.id) return true;
+  return false;
+}
+function visibleComments(post, viewer) { return Object.values(db.comments).filter(c => c.pid === post.id && !hiddenFor(c, post, viewer)); }
+function commentBlockReason(post, me) {
+  if (post.uid === me.id) return null;
+  const owner = db.users[post.uid]; const s = settingsOf(owner);
+  if (post.commentsOff) return 'Commenting is turned off for this post';
+  if (s.commentsFrom === 'off') return owner.username + ' has turned off comments';
+  if (s.commentsFrom === 'followers' && !isFollowing(me.id, owner.id)) return 'Only followers of ' + owner.username + ' can comment';
+  return null;
+}
 function postView(p, me) {
+  const mine = p.uid === me.id;
+  const vis = visibleComments(p, me);
   return {
     id: p.id, type: p.type, media: mediaUrl(p.media), caption: p.caption, created: p.created,
     user: publicUser(db.users[p.uid], me),
-    likes: p.likes.length, liked: p.likes.includes(me.id), saved: p.saves.includes(me.id),
-    comments: Object.values(db.comments).filter(c => c.pid === p.id).length,
-    preview: Object.values(db.comments).filter(c => c.pid === p.id).sort((a, b) => b.created - a.created).slice(0, 2).reverse()
+    likes: (p.hideLikes && !mine) ? null : p.likes.length + (p.bonusLikes || 0), likesHidden: !!p.hideLikes,
+    views: (p.views || []).length + (p.bonusViews || 0),
+    liked: p.likes.includes(me.id), saved: p.saves.includes(me.id),
+    comments: vis.length + (p.bonusComments || 0), commentsOff: !!p.commentsOff, canComment: !commentBlockReason(p, me), commentNote: commentBlockReason(p, me),
+    preview: vis.filter(c => !c.hidden && !c.restricted).sort((a, b) => b.created - a.created).slice(0, 2).reverse()
       .map(c => ({ id: c.id, text: c.text, user: { username: db.users[c.uid] ? db.users[c.uid].username : 'deleted' } })),
-    mine: p.uid === me.id,
+    mine,
   };
 }
+function readReceiptsOn(u) { return !!(u && settingsOf(u).readReceipts); }
 function messageView(m, me) {
-  const o = { id: m.id, from: db.users[m.from] ? db.users[m.from].username : '?', mine: m.from === me.id, kind: m.kind, text: m.text || '', created: m.created, seen: !!m.seen };
+  const o = { id: m.id, from: db.users[m.from] ? db.users[m.from].username : '?', mine: m.from === me.id, kind: m.kind, text: m.text || '', created: m.created, request: !!m.request };
+  // "Seen" is shown to the sender only if the reader allows read receipts (and the sender is not restricted)
+  const reader = db.users[m.to];
+  o.seen = m.from === me.id ? !!(m.seen && readReceiptsOn(reader) && !L(reader).restricted.includes(me.id)) : !!m.seen;
   if (m.kind === 'image') o.media = mediaUrl(m.media);
-  if (m.kind === 'post') { const p = db.posts[m.postId]; o.post = p ? { id: p.id, media: mediaUrl(p.media), type: p.type, caption: p.caption.slice(0, 80), user: publicUser(db.users[p.uid]) } : null; }
+  if (m.kind === 'post') {
+    const p = db.posts[m.postId]; const owner = p && db.users[p.uid];
+    if (!p) o.post = null;
+    else if (!canView(me, owner)) o.post = { id: p.id, locked: true, user: publicUser(owner) };
+    else o.post = { id: p.id, media: mediaUrl(p.media), type: p.type, caption: p.caption.slice(0, 80), user: publicUser(owner) };
+  }
   return o;
 }
+const NOTIF_PREF = { like: 'likes', comment: 'comments', follow: 'follows', request: 'follows', accept: 'follows', mention: 'mentions' };
 function notify(to, from, type, extra) {
   if (to === from) return;
+  const target = db.users[to]; if (!target || blockedEither(to, from)) return;
+  const pref = NOTIF_PREF[type]; if (pref && settingsOf(target).notif[pref] === false) return; // user switched this notification off
   const n = Object.assign({ id: id(), to, from, type, created: now(), read: false }, extra || {});
   db.notifs[n.id] = n; save();
   push(to, { type: 'notif' });
+}
+function handleMentions(text, from, extra) { // notifies @mentioned users who allow it; returns names that don't
+  const names = [...new Set((String(text).match(/@([a-z0-9._]{3,20})/gi) || []).map(x => x.slice(1).toLowerCase()))].slice(0, 20);
+  const blocked = [];
+  for (const n of names) {
+    const u = userByName(n); if (!u || u.id === from.id || gone(u) || blockedEither(u.id, from.id)) continue;
+    const s = settingsOf(u);
+    const ok = s.mentionsFrom === 'everyone' || (s.mentionsFrom === 'followers' && isFollowing(from.id, u.id));
+    if (ok) notify(u.id, from.id, 'mention', extra); else blocked.push(u.username);
+  }
+  return blocked;
 }
 
 // ---------------------------------------------------------------- media validation + storage
@@ -99,7 +209,7 @@ function sniff(buf) {
   return null;
 }
 const MIME = { jpg: 'image/jpeg', png: 'image/png', webp: 'image/webp', mp4: 'video/mp4', webm: 'video/webm' };
-// Accepts a data URL; returns stored file name. scope: {owner, conv?}. allow: ['image'] or ['image','video']
+// Accepts a data URL; returns stored file name. allow: ['image'] or ['image','video']
 function storeMedia(dataUrl, owner, allow, conv) {
   if (typeof dataUrl !== 'string') throw httpErr(400, 'Media missing');
   const m = /^data:([a-z]+\/[a-z0-9.+-]+);base64,([A-Za-z0-9+/=\r\n]+)$/i.exec(dataUrl);
@@ -119,6 +229,20 @@ function dropMedia(file) {
   delete db.media[file];
   fs.rm(path.join(MEDIA_DIR, file), () => {});
 }
+// who may open a non-DM media file: avatars for anyone who can see the user, post media for anyone who can see the post, story media per story rules
+function mediaAllowed(file, meta, me, req) {
+  const owner = db.users[meta.owner];
+  if (!owner) return false;
+  if (owner.id === me.id) return true;
+  const ses = req && db.sessions[req.sessKey];
+  if (me.admin && ses && ses.adminUntil > now()) return true; // unlocked admin can moderate posts/stories (never DM photos)
+  if (owner.avatar === file) return !L(owner).blocked.includes(me.id);
+  const post = Object.values(db.posts).find(p => p.media === file);
+  if (post) return canView(me, db.users[post.uid]);
+  const story = Object.values(db.stories).find(s => s.media === file);
+  if (story) return storyVisible(story, me);
+  return false;
+}
 
 // ---------------------------------------------------------------- realtime (Server-Sent Events)
 const streams = new Map(); // uid -> Set(res)
@@ -128,10 +252,14 @@ function push(uid, ev) {
   for (const res of set) { try { res.write(line); } catch (e) {} }
 }
 setInterval(() => { for (const set of streams.values()) for (const res of set) { try { res.write(': ping\n\n'); } catch (e) {} } }, 15000).unref();
+function presence(u, me) { // activity status: shown only if BOTH people have it on, and never to blocked/restricted people
+  if (!settingsOf(u).activityStatus || !settingsOf(me).activityStatus || L(u).restricted.includes(me.id) || blockedEither(u.id, me.id)) return { online: false, lastActive: null };
+  return { online: streams.has(u.id), lastActive: u.lastActive || null };
+}
 
 // ---------------------------------------------------------------- auth / sessions
 function parseCookies(req) {
-  const out = {}; (req.headers.cookie || '').split(';').forEach(p => { const i = p.indexOf('='); if (i > 0) out[p.slice(0, i).trim()] = decodeURIComponent(p.slice(i + 1).trim()); });
+  const out = {}; (req.headers.cookie || '').split(';').forEach(p => { const i = p.indexOf('='); if (i > 0) { try { out[p.slice(0, i).trim()] = decodeURIComponent(p.slice(i + 1).trim()); } catch (e) {} } });
   return out;
 }
 function sessionUser(req) {
@@ -139,18 +267,43 @@ function sessionUser(req) {
   const auth = req.headers.authorization || '';
   if (!tok && auth.startsWith('Bearer ')) tok = auth.slice(7);
   if (!tok || tok.length > 200) return null;
-  const s = db.sessions[sha(tok)];
+  const key = sha(tok);
+  const s = db.sessions[key];
   if (!s) return null;
-  if (now() - s.created > 30 * 24 * 3600 * 1000) { delete db.sessions[sha(tok)]; save(); return null; }
-  return db.users[s.uid] || null;
+  if (now() - s.created > 30 * 24 * 3600 * 1000) { delete db.sessions[key]; save(); return null; }
+  const u = db.users[s.uid];
+  if (!u || u.deactivated || u.suspended) return null;
+  req.sessKey = key;
+  const t = now();
+  if (!s.last || t - s.last > 60000) { s.last = t; u.lastActive = t; save(); }
+  return u;
+}
+const sessId = (key) => sha('sid:' + key).slice(0, 16); // public handle of a session (never the token or its hash)
+function maskIp(ip) {
+  ip = String(ip || '').replace(/^::ffff:/, '');
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(ip)) return ip.split('.').slice(0, 2).join('.') + '.x.x';
+  if (ip.includes(':')) return ip.split(':').slice(0, 2).join(':') + ':…';
+  return 'unknown';
+}
+function deviceOf(ua) {
+  ua = String(ua || '');
+  const os = /Android/.test(ua) ? 'Android' : /iPhone|iPad|iPod/.test(ua) ? 'iPhone/iPad' : /Windows/.test(ua) ? 'Windows' : /Mac OS X|Macintosh/.test(ua) ? 'Mac' : /Linux/.test(ua) ? 'Linux' : 'Unknown device';
+  const br = /; wv\)/.test(ua) ? 'Private Insta app' : /Edg\//.test(ua) ? 'Edge' : /OPR\//.test(ua) ? 'Opera' : /Chrome\//.test(ua) ? 'Chrome' : /Firefox\//.test(ua) ? 'Firefox' : /Safari\//.test(ua) ? 'Safari' : /node|undici/i.test(ua) ? 'Script' : 'Browser';
+  return br + ' on ' + os;
 }
 function newSession(res, req, uid) {
   const tok = id(32);
-  db.sessions[sha(tok)] = { uid, created: now() }; save();
+  const meta = { uid, created: now(), last: now(), device: deviceOf(req.headers['user-agent']), ip: maskIp(clientIp(req)) };
+  db.sessions[sha(tok)] = meta;
+  const u = db.users[uid];
+  if (u) { u.logins = (u.logins || []).concat({ t: meta.created, device: meta.device, ip: meta.ip }).slice(-20); u.lastActive = meta.created; }
+  save();
   const secure = (req.headers['x-forwarded-proto'] || '').includes('https') || req.headers['cf-visitor'] ? '; Secure' : '';
   res.setHeader('Set-Cookie', `ig_sid=${tok}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${30 * 24 * 3600}${secure}`);
   return tok;
 }
+function killSessions(uid, exceptKey) { let n = 0; for (const [k, s] of Object.entries(db.sessions)) if (s.uid === uid && k !== exceptKey) { delete db.sessions[k]; n++; } save(); return n; }
+function closeStreams(uid) { const set = streams.get(uid); if (set) for (const r of set) { try { r.end(); } catch (e) {} } streams.delete(uid); }
 const attempts = new Map(); // brute-force guard: key -> [count, firstTs]
 function tooMany(key, limit, count) { // count=false: only check
   const t = now(); let a = attempts.get(key);
@@ -159,6 +312,7 @@ function tooMany(key, limit, count) { // count=false: only check
   return a[0] > limit;
 }
 function clientIp(req) { return String(req.headers['cf-connecting-ip'] || (req.headers['x-forwarded-for'] || '').split(',')[0] || req.socket.remoteAddress).trim(); }
+const clearCookie = (res) => res.setHeader('Set-Cookie', 'ig_sid=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0');
 
 // ---------------------------------------------------------------- http plumbing
 function httpErr(code, msg) { const e = new Error(msg); e.code = code; return e; }
@@ -171,7 +325,7 @@ function readBody(req) {
   return new Promise((resolve, reject) => {
     let size = 0; const chunks = [];
     req.on('data', c => { size += c.length; if (size > MAX_BODY) { reject(httpErr(413, 'Request too large')); req.destroy(); } else chunks.push(c); });
-    req.on('end', () => { if (!size) return resolve({}); try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); } catch (e) { reject(httpErr(400, 'Bad JSON')); } });
+    req.on('end', () => { if (!size) return resolve({}); try { const v = JSON.parse(Buffer.concat(chunks).toString('utf8')); resolve(v && typeof v === 'object' ? v : {}); } catch (e) { reject(httpErr(400, 'Bad JSON')); } });
     req.on('error', reject);
   });
 }
@@ -200,13 +354,56 @@ function serveFile(req, res, file, mime, cache) {
   });
 }
 
+// ---------------------------------------------------------------- tiny zip writer (stored, no compression) for "Download your data"
+const CRC_T = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+function crc32(buf) { let c = 0xFFFFFFFF; for (let i = 0; i < buf.length; i++) c = CRC_T[(c ^ buf[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; }
+function makeZip(files) {
+  const parts = [], central = []; let offset = 0;
+  const d = new Date(); const time = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1); const date = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+  for (const f of files) {
+    const name = Buffer.from(f.name, 'utf8'); const data = f.data; const crc = crc32(data);
+    const lh = Buffer.alloc(30); lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt16LE(0x0800, 6); lh.writeUInt16LE(0, 8);
+    lh.writeUInt16LE(time, 10); lh.writeUInt16LE(date, 12); lh.writeUInt32LE(crc, 14); lh.writeUInt32LE(data.length, 18); lh.writeUInt32LE(data.length, 22); lh.writeUInt16LE(name.length, 26); lh.writeUInt16LE(0, 28);
+    parts.push(lh, name, data);
+    const ch = Buffer.alloc(46); ch.writeUInt32LE(0x02014b50, 0); ch.writeUInt16LE(20, 4); ch.writeUInt16LE(20, 6); ch.writeUInt16LE(0x0800, 8); ch.writeUInt16LE(0, 10);
+    ch.writeUInt16LE(time, 12); ch.writeUInt16LE(date, 14); ch.writeUInt32LE(crc, 16); ch.writeUInt32LE(data.length, 20); ch.writeUInt32LE(data.length, 24); ch.writeUInt16LE(name.length, 28);
+    ch.writeUInt32LE(offset, 42);
+    central.push(ch, name);
+    offset += 30 + name.length + data.length;
+  }
+  const cd = Buffer.concat(central);
+  const end = Buffer.alloc(22); end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(files.length, 8); end.writeUInt16LE(files.length, 10); end.writeUInt32LE(cd.length, 12); end.writeUInt32LE(offset, 16);
+  return Buffer.concat(parts.concat([cd, end]));
+}
+
 // ---------------------------------------------------------------- routes
 const routes = [];
 function route(method, pattern, auth, fn) {
   const keys = []; const re = new RegExp('^' + pattern.replace(/:(\w+)/g, (_, k) => { keys.push(k); return '([^/]+)'; }) + '$');
   routes.push({ method, re, keys, auth, fn });
 }
+function deleteUserData(me) { // removes a user and everything that points at them
+  for (const x of Object.values(db.posts)) if (x.uid === me.id) { for (const c of Object.values(db.comments)) if (c.pid === x.id) delete db.comments[c.id]; dropMedia(x.media); delete db.posts[x.id]; }
+  for (const x of Object.values(db.posts)) { x.likes = x.likes.filter(u => u !== me.id); x.saves = x.saves.filter(u => u !== me.id); }
+  for (const c of Object.values(db.comments)) if (c.uid === me.id || !db.posts[c.pid]) delete db.comments[c.id];
+  for (const st of Object.values(db.stories)) { if (st.uid === me.id) { dropMedia(st.media); delete db.stories[st.id]; } else st.seen = st.seen.filter(u => u !== me.id); }
+  for (const m of Object.values(db.messages)) if (m.from === me.id || m.to === me.id) { dropMedia(m.media); delete db.messages[m.id]; }
+  for (const k of Object.keys(db.accepted || {})) if (k.split(':').includes(me.id)) delete db.accepted[k];
+  for (const n of Object.values(db.notifs)) if (n.to === me.id || n.from === me.id || (n.pid && !db.posts[n.pid])) delete db.notifs[n.id];
+  for (const [k, s] of Object.entries(db.sessions)) if (s.uid === me.id) delete db.sessions[k];
+  delete db.follows[me.id]; for (const k of Object.keys(db.follows)) db.follows[k] = db.follows[k].filter(u => u !== me.id);
+  delete db.requests[me.id]; for (const k of Object.keys(db.requests)) db.requests[k] = db.requests[k].filter(u => u !== me.id);
+  for (const u of Object.values(db.users)) for (const k of LIST_KEYS) if (Array.isArray(u[k])) u[k] = u[k].filter(x => x !== me.id);
+  closeStreams(me.id);
+  dropMedia(me.avatar); delete db.users[me.id];
+  save();
+}
+const noDemo = (me, what) => { if (me.demo) throw httpErr(403, 'The shared demo account cannot ' + what + ' — sign up for your own account to try this'); };
+function meView(me) {
+  return Object.assign(publicUser(me, me), { bio: me.bio || '', website: me.website || '', pronouns: me.pronouns || '', gender: me.gender || '', admin: !!me.admin, demo: !!me.demo, settings: settingsOf(me) });
+}
 
+// ================================================================ accounts
 route('POST', '/api/signup', false, async (req, res, b) => {
   if (tooMany('signup:' + clientIp(req), 40)) throw httpErr(429, 'Too many sign-ups from this network, try later');
   const username = clean(b.username, 30).toLowerCase();
@@ -215,9 +412,9 @@ route('POST', '/api/signup', false, async (req, res, b) => {
   if (password.length < 6 || password.length > 100) throw httpErr(400, 'Password must be 6-100 characters');
   if (userByName(username)) throw httpErr(409, 'Username already taken');
   const salt = id(16);
-  const u = { id: id(), username, name: clean(b.name, 40) || username, bio: '', avatar: null, salt, pass: hashPassword(password, salt), created: now() };
+  const u = { id: id(), username, name: clean(b.name, 40) || username, bio: '', avatar: null, salt, pass: hashPassword(password, salt), created: now(), logins: [] };
+  settingsOf(u); L(u);
   db.users[u.id] = u; db.follows[u.id] = [];
-  const official = userByName('techbroz'); if (official) db.follows[u.id].push(official.id);
   save(); newSession(res, req, u.id);
   send(res, 201, { user: publicUser(u) });
 });
@@ -227,132 +424,346 @@ route('POST', '/api/login', false, async (req, res, b) => {
   if (tooMany(ipKey, 60, false) || tooMany(uKey, 10, false)) throw httpErr(429, 'Too many wrong passwords, wait 10 minutes');
   const u = userByName(username);
   if (!u || !checkPassword(u, String(b.password || ''))) { tooMany(ipKey, 60); tooMany(uKey, 10); throw httpErr(401, 'Wrong username or password'); }
+  if (u.suspended) throw httpErr(403, 'This account has been suspended by the admin');
+  let reactivated = false;
+  if (u.deactivated) { u.deactivated = false; delete u.deactivatedAt; reactivated = true; } // logging in again reactivates (like Instagram)
   newSession(res, req, u.id);
-  send(res, 200, { user: publicUser(u) });
+  send(res, 200, { user: publicUser(u), reactivated });
 });
 route('POST', '/api/logout', false, async (req, res) => {
   const tok = parseCookies(req).ig_sid; if (tok) { delete db.sessions[sha(tok)]; save(); }
-  res.setHeader('Set-Cookie', 'ig_sid=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0');
+  clearCookie(res);
   send(res, 200, { ok: true });
 });
 route('GET', '/api/me', true, async (req, res, b, me) => {
-  const unreadDm = Object.values(db.messages).filter(m => m.to === me.id && !m.seen && !m.deleted).length;
-  const unreadNotif = Object.values(db.notifs).filter(n => n.to === me.id && !n.read).length;
-  send(res, 200, { user: Object.assign(publicUser(me, me), { bio: me.bio }), unreadDm, unreadNotif });
+  const unreadDm = Object.values(db.messages).filter(m => m.to === me.id && !m.seen && !m.deleted && !m.request && !gone(db.users[m.from])).length;
+  const msgRequests = new Set(Object.values(db.messages).filter(m => m.to === me.id && m.request && !m.deleted && !gone(db.users[m.from])).map(m => m.from)).size;
+  const unreadNotif = Object.values(db.notifs).filter(n => n.to === me.id && !n.read && !blockedEither(me.id, n.from)).length;
+  const followRequests = (db.requests[me.id] || []).filter(i => !gone(db.users[i])).length;
+  send(res, 200, { user: meView(me), unreadDm, unreadNotif, msgRequests, followRequests, version: VERSION });
 });
+const ACCENTS = /^#[0-9a-f]{6}$/i;
 route('PUT', '/api/me', true, async (req, res, b, me) => {
+  if (b.username !== undefined && clean(b.username, 30).toLowerCase() !== me.username) {
+    noDemo(me, 'change its username');
+    const nu = clean(b.username, 30).toLowerCase();
+    if (!USERNAME_RE.test(nu)) throw httpErr(400, 'Username: 3-20 chars, a-z 0-9 . _ only');
+    if (userByName(nu)) throw httpErr(409, 'That username is already taken');
+    me.username = nu;
+  }
   if (b.name !== undefined) me.name = clean(b.name, 40) || me.username;
   if (b.bio !== undefined) me.bio = clean(b.bio, 150);
+  if (b.website !== undefined) {
+    let w = clean(b.website, 120);
+    if (w) {
+      if (!/^https?:\/\//i.test(w)) w = 'https://' + w;
+      let ok = false; try { const x = new URL(w); ok = (x.protocol === 'https:' || x.protocol === 'http:') && /\./.test(x.hostname); } catch (e) {}
+      if (!ok) throw httpErr(400, 'Website must be a valid link, e.g. https://example.com');
+    }
+    me.website = w;
+  }
+  if (b.pronouns !== undefined) me.pronouns = clean(b.pronouns, 30);
+  if (b.gender !== undefined) me.gender = clean(b.gender, 30);
+  if (b.accent !== undefined) { const a = clean(b.accent, 7); if (a && !ACCENTS.test(a)) throw httpErr(400, 'Accent must be a colour like #a78bfa'); me.accent = a || null; }
   if (b.avatar) { const old = me.avatar; me.avatar = storeMedia(b.avatar, me.id, ['image']).file; dropMedia(old); }
   if (b.removeAvatar) { dropMedia(me.avatar); me.avatar = null; }
-  save(); send(res, 200, { user: Object.assign(publicUser(me, me), { bio: me.bio }) });
+  save(); send(res, 200, { user: meView(me) });
 });
 route('DELETE', '/api/me', true, async (req, res, b, me) => {
   if (!checkPassword(me, String(b.password || ''))) throw httpErr(401, 'Password is wrong');
   if (me.demo) throw httpErr(403, 'Demo accounts cannot be deleted');
-  for (const x of Object.values(db.posts)) if (x.uid === me.id) { dropMedia(x.media); delete db.posts[x.id]; }
-  for (const x of Object.values(db.posts)) { x.likes = x.likes.filter(u => u !== me.id); x.saves = x.saves.filter(u => u !== me.id); }
-  for (const c of Object.values(db.comments)) if (c.uid === me.id || !db.posts[c.pid]) delete db.comments[c.id];
-  for (const st of Object.values(db.stories)) { if (st.uid === me.id) { dropMedia(st.media); delete db.stories[st.id]; } else st.seen = st.seen.filter(u => u !== me.id); }
-  for (const m of Object.values(db.messages)) if (m.from === me.id || m.to === me.id) { dropMedia(m.media); delete db.messages[m.id]; }
-  for (const n of Object.values(db.notifs)) if (n.to === me.id || n.from === me.id || (n.pid && !db.posts[n.pid])) delete db.notifs[n.id];
-  for (const [k, s] of Object.entries(db.sessions)) if (s.uid === me.id) delete db.sessions[k];
-  delete db.follows[me.id]; for (const k of Object.keys(db.follows)) db.follows[k] = db.follows[k].filter(u => u !== me.id);
-  dropMedia(me.avatar); delete db.users[me.id];
-  res.setHeader('Set-Cookie', 'ig_sid=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0');
-  save(); send(res, 200, { ok: true });
+  if (me.admin) throw httpErr(403, 'The admin account cannot be deleted from the app');
+  deleteUserData(me);
+  clearCookie(res); send(res, 200, { ok: true });
 });
-route('GET', '/api/users/:username', true, async (req, res, b, me, p) => {
+route('POST', '/api/me/deactivate', true, async (req, res, b, me) => {
+  if (!checkPassword(me, String(b.password || ''))) throw httpErr(401, 'Password is wrong');
+  noDemo(me, 'be deactivated'); if (me.admin) throw httpErr(403, 'The admin account cannot be deactivated');
+  me.deactivated = true; me.deactivatedAt = now();
+  killSessions(me.id); closeStreams(me.id);
+  clearCookie(res); save(); send(res, 200, { ok: true, note: 'Your account is hidden. Log in again any time to reactivate it.' });
+});
+route('POST', '/api/me/password', true, async (req, res, b, me) => {
+  noDemo(me, 'change its password');
+  if (tooMany('pwchange:' + me.id, 10, false)) throw httpErr(429, 'Too many tries, wait 10 minutes');
+  if (!checkPassword(me, String(b.oldPassword || ''))) { tooMany('pwchange:' + me.id, 10); throw httpErr(401, 'Current password is wrong'); }
+  const np = String(b.newPassword || '');
+  if (np.length < 6 || np.length > 100) throw httpErr(400, 'New password must be 6-100 characters');
+  if (checkPassword(me, np)) throw httpErr(400, 'New password must be different');
+  me.salt = id(16); me.pass = hashPassword(np, me.salt);
+  const n = killSessions(me.id, req.sessKey); // every other device is logged out
+  save(); send(res, 200, { ok: true, loggedOut: n });
+});
+route('GET', '/api/me/sessions', true, async (req, res, b, me) => {
+  const list = Object.entries(db.sessions).filter(([, s]) => s.uid === me.id).sort((a, c) => (c[1].last || c[1].created) - (a[1].last || a[1].created))
+    .map(([k, s]) => ({ id: sessId(k), device: s.device || 'Unknown device', ip: s.ip || 'unknown', created: s.created, last: s.last || s.created, current: k === req.sessKey }));
+  send(res, 200, { sessions: list, logins: (me.logins || []).slice().reverse() });
+});
+route('DELETE', '/api/me/sessions/:sid', true, async (req, res, b, me, p) => {
+  const k = Object.keys(db.sessions).find(k => db.sessions[k].uid === me.id && sessId(k) === p.sid);
+  if (!k) throw httpErr(404, 'Session not found');
+  if (k === req.sessKey) throw httpErr(400, 'Use Log out for this device');
+  delete db.sessions[k]; save(); send(res, 200, { ok: true });
+});
+route('POST', '/api/me/logout-others', true, async (req, res, b, me) => {
+  if (me.demo) throw httpErr(403, 'The shared demo account cannot log out other people — sign up for your own account to try this');
+  send(res, 200, { ok: true, loggedOut: killSessions(me.id, req.sessKey) });
+});
+route('POST', '/api/me/logout-all', true, async (req, res, b, me) => {
+  if (me.demo) throw httpErr(403, 'The shared demo account cannot log out other people — sign up for your own account to try this');
+  const n = killSessions(me.id); closeStreams(me.id); clearCookie(res); send(res, 200, { ok: true, loggedOut: n });
+});
+route('GET', '/api/me/export', true, async (req, res, b, me) => {
+  const uname = (i) => (db.users[i] ? db.users[i].username : 'deleted');
+  const myPosts = Object.values(db.posts).filter(p => p.uid === me.id).sort((a, c) => a.created - c.created);
+  const files = [];
+  let total = 0;
+  const addMedia = (file, name) => { if (!file) return null; const fp = path.join(MEDIA_DIR, file); try { const st = fs.statSync(fp); if (total + st.size > 60 * 1024 * 1024) return null; total += st.size; files.push({ name, data: fs.readFileSync(fp) }); return name; } catch (e) { return null; } };
+  const data = {
+    app: APP_NAME + ' v' + VERSION, exportedAt: new Date().toISOString(), note: 'Only your own data. Media files of your posts are in the media/ folder.',
+    profile: { username: me.username, name: me.name, bio: me.bio || '', website: me.website || '', pronouns: me.pronouns || '', gender: me.gender || '', accent: me.accent || '', created: new Date(me.created).toISOString(), avatar: addMedia(me.avatar, 'media/avatar.' + String(me.avatar || '').split('.').pop()) },
+    settings: settingsOf(me),
+    followers: followers(me.id).map(uname), following: following(me.id).map(uname),
+    closeFriends: L(me).closeFriends.map(uname), hideStoryFrom: me.storyHidden.map(uname), blocked: me.blocked.map(uname), restricted: me.restricted.map(uname), mutedPosts: me.mutedPosts.map(uname), mutedStories: me.mutedStories.map(uname),
+    posts: myPosts.map((p, i) => ({ id: p.id, type: p.type, caption: p.caption, created: new Date(p.created).toISOString(), likes: p.likes.length, commentsOff: !!p.commentsOff, hideLikeCount: !!p.hideLikes, file: addMedia(p.media, 'media/post-' + (i + 1) + '.' + p.media.split('.').pop()) })),
+    commentsYouWrote: Object.values(db.comments).filter(c => c.uid === me.id).map(c => ({ postId: c.pid, text: c.text, created: new Date(c.created).toISOString() })),
+    likedPostIds: Object.values(db.posts).filter(p => p.likes.includes(me.id)).map(p => p.id),
+    savedPostIds: Object.values(db.posts).filter(p => p.saves.includes(me.id)).map(p => p.id),
+    messages: Object.values(db.messages).filter(m => (m.from === me.id || m.to === me.id) && !m.deleted).sort((a, c) => a.created - c.created)
+      .map(m => ({ with: uname(m.from === me.id ? m.to : m.from), fromYou: m.from === me.id, kind: m.kind, text: m.text || '', created: new Date(m.created).toISOString() })),
+    loginActivity: (me.logins || []).map(l => ({ time: new Date(l.t).toISOString(), device: l.device, ip: l.ip })),
+  };
+  files.unshift({ name: 'your_data.json', data: Buffer.from(JSON.stringify(data, null, 2)) });
+  files.unshift({ name: 'README.txt', data: Buffer.from(APP_NAME + ' — your data export (' + me.username + ')\r\nyour_data.json = profile, settings, posts, comments, messages, login activity.\r\nmedia/ = your photos and videos.\r\n') });
+  const zip = makeZip(files);
+  res.writeHead(200, { 'Content-Type': 'application/zip', 'Content-Disposition': 'attachment; filename="private-insta-' + me.username + '-data.zip"', 'Content-Length': zip.length, 'Cache-Control': 'private, no-store', 'Vary': 'Cookie' });
+  res.end(zip);
+});
+
+// ================================================================ settings
+const ENUMS = { storyReplies: ['everyone', 'following', 'off'], dmFrom: ['everyone', 'followers', 'nobody'], commentsFrom: ['everyone', 'followers', 'off'], mentionsFrom: ['everyone', 'followers', 'nobody'], theme: ['auto', 'dark', 'light'], language: ['en', 'hi'] };
+const BOOLS = ['private', 'readReceipts', 'typing', 'activityStatus'];
+route('GET', '/api/settings', true, async (req, res, b, me) => send(res, 200, { settings: settingsOf(me) }));
+route('PUT', '/api/settings', true, async (req, res, b, me) => {
+  const s = settingsOf(me); const next = JSON.parse(JSON.stringify(s));
+  for (const k of BOOLS) if (b[k] !== undefined) { if (typeof b[k] !== 'boolean') throw httpErr(400, k + ' must be true or false'); next[k] = b[k]; }
+  for (const [k, vals] of Object.entries(ENUMS)) if (b[k] !== undefined) { if (!vals.includes(b[k])) throw httpErr(400, k + ' must be one of: ' + vals.join(', ')); next[k] = b[k]; }
+  if (b.notif !== undefined) {
+    if (!b.notif || typeof b.notif !== 'object') throw httpErr(400, 'notif must be an object');
+    for (const [k, v] of Object.entries(b.notif)) { if (!(k in DEFAULT_SETTINGS.notif) || typeof v !== 'boolean') throw httpErr(400, 'Unknown notification setting ' + k); next.notif[k] = v; }
+  }
+  if (b.hiddenWords !== undefined) {
+    const arr = Array.isArray(b.hiddenWords) ? b.hiddenWords : String(b.hiddenWords).split(/[,\n]/);
+    next.hiddenWords = [...new Set(arr.map(w => clean(w, 30).toLowerCase()).filter(Boolean))].slice(0, 100);
+  }
+  const wasPrivate = s.private;
+  Object.assign(s, next);
+  if (wasPrivate && !s.private) { // going public: pending follow requests are approved automatically
+    for (const rid of db.requests[me.id] || []) if (db.users[rid] && !isFollowing(rid, me.id)) { following(rid).push(me.id); notify(rid, me.id, 'accept'); }
+    db.requests[me.id] = [];
+  }
+  save(); send(res, 200, { settings: s });
+});
+const listView = (ids, me) => ids.map(i => db.users[i]).filter(u => u && !gone(u)).map(u => publicUser(u, me));
+route('GET', '/api/settings/lists', true, async (req, res, b, me) => {
+  L(me);
+  send(res, 200, { closeFriends: listView(me.closeFriends, me), storyHidden: listView(me.storyHidden, me), blocked: me.blocked.map(i => db.users[i]).filter(Boolean).map(u => publicUser(u)),
+    restricted: listView(me.restricted, me), mutedPosts: listView(me.mutedPosts, me), mutedStories: listView(me.mutedStories, me) });
+});
+function listToggle(key, add) {
+  return async (req, res, b, me, p) => {
+    const u = visibleUser(p.username, me); if (u.id === me.id) throw httpErr(400, "You can't do that to yourself");
+    const arr = L(me)[key];
+    if (add && !arr.includes(u.id)) arr.push(u.id);
+    if (!add) me[key] = arr.filter(x => x !== u.id);
+    save(); send(res, 200, { ok: true, [key]: add });
+  };
+}
+route('POST', '/api/close-friends/:username', true, listToggle('closeFriends', true));
+route('DELETE', '/api/close-friends/:username', true, listToggle('closeFriends', false));
+route('POST', '/api/story-hide/:username', true, listToggle('storyHidden', true));
+route('DELETE', '/api/story-hide/:username', true, listToggle('storyHidden', false));
+route('POST', '/api/users/:username/restrict', true, listToggle('restricted', true));
+route('DELETE', '/api/users/:username/restrict', true, listToggle('restricted', false));
+route('PUT', '/api/users/:username/mute', true, async (req, res, b, me, p) => {
+  const u = visibleUser(p.username, me); if (u.id === me.id) throw httpErr(400, "You can't mute yourself");
+  L(me);
+  for (const [k, key] of [['posts', 'mutedPosts'], ['stories', 'mutedStories']]) if (b[k] !== undefined) {
+    me[key] = me[key].filter(x => x !== u.id); if (b[k]) me[key].push(u.id);
+  }
+  save(); send(res, 200, { muted: { posts: me.mutedPosts.includes(u.id), stories: me.mutedStories.includes(u.id) } });
+});
+route('POST', '/api/users/:username/block', true, async (req, res, b, me, p) => {
   const u = userByName(p.username); if (!u) throw httpErr(404, 'User not found');
-  const posts = Object.values(db.posts).filter(x => x.uid === u.id).sort((a, c) => c.created - a.created)
-    .map(x => ({ id: x.id, type: x.type, media: mediaUrl(x.media), likes: x.likes.length, comments: Object.values(db.comments).filter(c => c.pid === x.id).length }));
-  send(res, 200, {
-    user: Object.assign(publicUser(u, me), { bio: u.bio, posts: posts.length, followers: followers(u.id).length, following: following(u.id).length, isMe: u.id === me.id, isFollowing: following(me.id).includes(u.id), followsYou: following(u.id).includes(me.id) }),
-    posts,
+  if (u.id === me.id) throw httpErr(400, "You can't block yourself");
+  L(me); if (!me.blocked.includes(u.id)) me.blocked.push(u.id);
+  db.follows[me.id] = following(me.id).filter(x => x !== u.id); db.follows[u.id] = following(u.id).filter(x => x !== me.id);
+  db.requests[me.id] = (db.requests[me.id] || []).filter(x => x !== u.id); db.requests[u.id] = (db.requests[u.id] || []).filter(x => x !== me.id);
+  me.closeFriends = me.closeFriends.filter(x => x !== u.id);
+  save(); send(res, 200, { blocked: true });
+});
+route('DELETE', '/api/users/:username/block', true, async (req, res, b, me, p) => {
+  const u = userByName(p.username); if (!u) throw httpErr(404, 'User not found');
+  me.blocked = L(me).blocked.filter(x => x !== u.id); save(); send(res, 200, { blocked: false });
+});
+
+// ================================================================ profiles, follow, follow requests
+route('GET', '/api/users/:username', true, async (req, res, b, me, p) => {
+  const u = visibleUser(p.username, me);
+  const isMe = u.id === me.id; const blockedByMe = L(me).blocked.includes(u.id);
+  const locked = !canView(me, u);
+  const posts = locked ? [] : Object.values(db.posts).filter(x => x.uid === u.id).sort((a, c) => c.created - a.created)
+    .map(x => ({ id: x.id, type: x.type, media: mediaUrl(x.media), likes: (x.hideLikes && !isMe) ? null : x.likes.length + (x.bonusLikes || 0), comments: visibleComments(x, me).length + (x.bonusComments || 0), views: (x.views || []).length + (x.bonusViews || 0) }));
+  const user = Object.assign(publicUser(u, me), {
+    bio: u.bio || '', website: u.website || '', pronouns: u.pronouns || '',
+    posts: Object.values(db.posts).filter(x => x.uid === u.id).length, followers: followerCount(u), following: following(u.id).filter(i => !gone(db.users[i])).length,
+    isMe, isFollowing: isFollowing(me.id, u.id), followsYou: isFollowing(u.id, me.id), requested: (db.requests[u.id] || []).includes(me.id),
+    locked, blockedByMe, restricted: L(me).restricted.includes(u.id), closeFriend: me.closeFriends.includes(u.id), storyHidden: me.storyHidden.includes(u.id),
+    muted: { posts: me.mutedPosts.includes(u.id), stories: me.mutedStories.includes(u.id) },
   });
+  if (isMe) Object.assign(user, { gender: u.gender || '' });
+  if (blockedByMe) { user.hasStory = false; }
+  send(res, 200, { user, posts });
 });
 route('GET', '/api/users/:username/:list', true, async (req, res, b, me, p) => {
-  const u = userByName(p.username); if (!u) throw httpErr(404, 'User not found');
+  const u = visibleUser(p.username, me);
+  if (!canView(me, u)) throw httpErr(403, 'This account is private');
   let ids;
   if (p.list === 'followers') ids = followers(u.id); else if (p.list === 'following') ids = following(u.id); else throw httpErr(404, 'Not found');
-  send(res, 200, { users: ids.map(i => db.users[i]).filter(Boolean).map(x => Object.assign(publicUser(x, me), { isFollowing: following(me.id).includes(x.id), isMe: x.id === me.id })) });
+  send(res, 200, { users: ids.map(i => db.users[i]).filter(x => x && !gone(x) && !blockedEither(x.id, me.id)).map(x => Object.assign(publicUser(x, me), { isFollowing: isFollowing(me.id, x.id), requested: (db.requests[x.id] || []).includes(me.id), isMe: x.id === me.id })) });
 });
 route('POST', '/api/users/:username/follow', true, async (req, res, b, me, p) => {
-  const u = userByName(p.username); if (!u) throw httpErr(404, 'User not found');
+  const u = visibleUser(p.username, me);
   if (u.id === me.id) throw httpErr(400, "You can't follow yourself");
-  const f = following(me.id); if (!f.includes(u.id)) { f.push(u.id); notify(u.id, me.id, 'follow'); }
-  save(); send(res, 200, { following: true, followers: followers(u.id).length });
+  if (L(me).blocked.includes(u.id)) throw httpErr(403, 'Unblock ' + u.username + ' to follow them');
+  if (isFollowing(me.id, u.id)) return send(res, 200, { following: true, requested: false, followers: followerCount(u) });
+  if (settingsOf(u).private) { // private account: a follow request the owner must approve
+    const r = db.requests[u.id] || (db.requests[u.id] = []);
+    if (!r.includes(me.id)) { r.push(me.id); notify(u.id, me.id, 'request'); }
+    save(); return send(res, 200, { following: false, requested: true, followers: followerCount(u) });
+  }
+  following(me.id).push(u.id); notify(u.id, me.id, 'follow');
+  save(); send(res, 200, { following: true, requested: false, followers: followerCount(u) });
 });
 route('DELETE', '/api/users/:username/follow', true, async (req, res, b, me, p) => {
   const u = userByName(p.username); if (!u) throw httpErr(404, 'User not found');
   db.follows[me.id] = following(me.id).filter(x => x !== u.id);
-  save(); send(res, 200, { following: false, followers: followers(u.id).length });
+  db.requests[u.id] = (db.requests[u.id] || []).filter(x => x !== me.id);
+  save(); send(res, 200, { following: false, requested: false, followers: followerCount(u) });
+});
+route('DELETE', '/api/followers/:username', true, async (req, res, b, me, p) => { // remove a follower
+  const u = userByName(p.username); if (!u) throw httpErr(404, 'User not found');
+  db.follows[u.id] = following(u.id).filter(x => x !== me.id); save(); send(res, 200, { ok: true });
+});
+route('GET', '/api/requests', true, async (req, res, b, me) => {
+  send(res, 200, { requests: (db.requests[me.id] || []).map(i => db.users[i]).filter(u => u && !gone(u)).map(u => Object.assign(publicUser(u, me), { isFollowing: isFollowing(me.id, u.id) })) });
+});
+route('POST', '/api/requests/:username/accept', true, async (req, res, b, me, p) => {
+  const u = userByName(p.username); const r = db.requests[me.id] || [];
+  if (!u || !r.includes(u.id)) throw httpErr(404, 'Request not found');
+  db.requests[me.id] = r.filter(x => x !== u.id);
+  if (!isFollowing(u.id, me.id)) following(u.id).push(me.id);
+  notify(u.id, me.id, 'accept');
+  for (const n of Object.values(db.notifs)) if (n.to === me.id && n.from === u.id && n.type === 'request') n.type = 'follow';
+  save(); send(res, 200, { ok: true, followers: followerCount(me) });
+});
+route('DELETE', '/api/requests/:username', true, async (req, res, b, me, p) => {
+  const u = userByName(p.username); const r = db.requests[me.id] || [];
+  if (!u || !r.includes(u.id)) throw httpErr(404, 'Request not found');
+  db.requests[me.id] = r.filter(x => x !== u.id);
+  for (const n of Object.values(db.notifs)) if (n.to === me.id && n.from === u.id && n.type === 'request') delete db.notifs[n.id];
+  save(); send(res, 200, { ok: true });
 });
 route('GET', '/api/search', true, async (req, res, b, me, p, q) => {
   const s = clean(q.get('q'), 30).toLowerCase();
-  let list = Object.values(db.users).filter(u => u.id !== me.id);
+  let list = Object.values(db.users).filter(u => u.id !== me.id && !gone(u) && !blockedEither(u.id, me.id));
   if (s) list = list.filter(u => u.username.includes(s) || (u.name || '').toLowerCase().includes(s));
-  else list = list.filter(u => !following(me.id).includes(u.id));
-  send(res, 200, { users: list.slice(0, 30).map(u => Object.assign(publicUser(u, me), { isFollowing: following(me.id).includes(u.id), followers: followers(u.id).length })) });
+  else list = list.filter(u => !isFollowing(me.id, u.id));
+  send(res, 200, { users: list.slice(0, 30).map(u => Object.assign(publicUser(u, me), { isFollowing: isFollowing(me.id, u.id), requested: (db.requests[u.id] || []).includes(me.id), followers: followerCount(u) })) });
 });
 
-// ---- posts
+// ================================================================ posts
 function listPosts(filter, q, me) {
   const before = parseInt(q.get('before') || '0', 10) || Infinity;
   const limit = Math.min(parseInt(q.get('limit') || '12', 10) || 12, 30);
-  const rows = Object.values(db.posts).filter(filter).filter(x => x.created < before).sort((a, c) => c.created - a.created);
+  const rows = Object.values(db.posts).filter(x => canView(me, db.users[x.uid])).filter(filter).filter(x => x.created < before).sort((a, c) => c.created - a.created);
   return { posts: rows.slice(0, limit).map(x => postView(x, me)), more: rows.length > limit };
 }
 route('GET', '/api/feed', true, async (req, res, b, me, p, q) => {
-  const f = new Set(following(me.id).concat(me.id));
+  const f = new Set(following(me.id).filter(x => !L(me).mutedPosts.includes(x)).concat(me.id));
   send(res, 200, listPosts(x => f.has(x.uid), q, me));
 });
-route('GET', '/api/explore', true, async (req, res, b, me, p, q) => send(res, 200, listPosts(x => x.uid !== me.id, q, me)));
+route('GET', '/api/explore', true, async (req, res, b, me, p, q) => send(res, 200, listPosts(x => x.uid !== me.id && !L(me).mutedPosts.includes(x.uid), q, me)));
 route('GET', '/api/reels', true, async (req, res, b, me, p, q) => send(res, 200, listPosts(x => x.type === 'video', q, me)));
 route('GET', '/api/saved', true, async (req, res, b, me, p, q) => send(res, 200, listPosts(x => x.saves.includes(me.id), q, me)));
 route('POST', '/api/posts', true, async (req, res, b, me) => {
   const caption = clean(b.caption, 2200);
   const m = storeMedia(b.media, me.id, ['image', 'video']);
-  const post = { id: id(), uid: me.id, media: m.file, type: m.kind, caption, created: now(), likes: [], saves: [] };
+  const post = { id: id(), uid: me.id, media: m.file, type: m.kind, caption, created: now(), likes: [], saves: [], views: [], commentsOff: !!b.commentsOff, hideLikes: !!b.hideLikes };
   db.posts[post.id] = post; save();
-  send(res, 201, { post: postView(post, me) });
+  const mentionBlocked = handleMentions(caption, me, { pid: post.id, text: caption.slice(0, 80) });
+  send(res, 201, { post: postView(post, me), mentionBlocked });
 });
 function getPost(pid) { const x = db.posts[pid]; if (!x) throw httpErr(404, 'Post not found'); return x; }
-route('GET', '/api/posts/:id', true, async (req, res, b, me, p) => send(res, 200, { post: postView(getPost(p.id), me) }));
+function viewPost(pid, me) { // a post the caller is allowed to see (private account / block / deactivated enforced here)
+  const x = getPost(pid); const owner = db.users[x.uid];
+  if (!owner || (x.uid !== me.id && (gone(owner) || blockedEither(me.id, owner.id)))) throw httpErr(404, 'Post not found');
+  if (!canView(me, owner)) throw httpErr(403, 'This account is private');
+  return x;
+}
+route('GET', '/api/posts/:id', true, async (req, res, b, me, p) => send(res, 200, { post: postView(viewPost(p.id, me), me) }));
 route('PUT', '/api/posts/:id', true, async (req, res, b, me, p) => {
   const x = getPost(p.id); if (x.uid !== me.id) throw httpErr(403, 'You can only edit your own post');
-  x.caption = clean(b.caption, 2200); save(); send(res, 200, { post: postView(x, me) });
+  if (b.caption !== undefined) x.caption = clean(b.caption, 2200);
+  if (b.commentsOff !== undefined) x.commentsOff = !!b.commentsOff;
+  if (b.hideLikes !== undefined) x.hideLikes = !!b.hideLikes;
+  save(); send(res, 200, { post: postView(x, me) });
 });
-route('DELETE', '/api/posts/:id', true, async (req, res, b, me, p) => {
-  const x = getPost(p.id); if (x.uid !== me.id) throw httpErr(403, 'You can only delete your own post');
+function removePost(x) {
   for (const c of Object.values(db.comments)) if (c.pid === x.id) delete db.comments[c.id];
   for (const n of Object.values(db.notifs)) if (n.pid === x.id) delete db.notifs[n.id];
-  dropMedia(x.media); delete db.posts[x.id]; save(); send(res, 200, { ok: true });
+  dropMedia(x.media); delete db.posts[x.id]; save();
+}
+route('DELETE', '/api/posts/:id', true, async (req, res, b, me, p) => {
+  const x = getPost(p.id); if (x.uid !== me.id) throw httpErr(403, 'You can only delete your own post');
+  removePost(x); send(res, 200, { ok: true });
 });
+const likeCount = (x) => x.likes.length + (x.bonusLikes || 0);
 route('POST', '/api/posts/:id/like', true, async (req, res, b, me, p) => {
-  const x = getPost(p.id); if (!x.likes.includes(me.id)) { x.likes.push(me.id); notify(x.uid, me.id, 'like', { pid: x.id }); }
-  save(); send(res, 200, { liked: true, likes: x.likes.length });
+  const x = viewPost(p.id, me); if (!x.likes.includes(me.id)) { x.likes.push(me.id); notify(x.uid, me.id, 'like', { pid: x.id }); }
+  save(); send(res, 200, { liked: true, likes: (x.hideLikes && x.uid !== me.id) ? null : likeCount(x) });
 });
 route('DELETE', '/api/posts/:id/like', true, async (req, res, b, me, p) => {
-  const x = getPost(p.id); x.likes = x.likes.filter(u => u !== me.id); save(); send(res, 200, { liked: false, likes: x.likes.length });
+  const x = getPost(p.id); x.likes = x.likes.filter(u => u !== me.id); save(); send(res, 200, { liked: false, likes: (x.hideLikes && x.uid !== me.id) ? null : likeCount(x) });
+});
+route('POST', '/api/posts/:id/view', true, async (req, res, b, me, p) => {
+  const x = viewPost(p.id, me); if (!Array.isArray(x.views)) x.views = [];
+  if (x.uid !== me.id && !x.views.includes(me.id)) { x.views.push(me.id); save(); }
+  send(res, 200, { views: x.views.length + (x.bonusViews || 0) });
 });
 route('POST', '/api/posts/:id/save', true, async (req, res, b, me, p) => {
-  const x = getPost(p.id); if (!x.saves.includes(me.id)) x.saves.push(me.id); save(); send(res, 200, { saved: true });
+  const x = viewPost(p.id, me); if (!x.saves.includes(me.id)) x.saves.push(me.id); save(); send(res, 200, { saved: true });
 });
 route('DELETE', '/api/posts/:id/save', true, async (req, res, b, me, p) => {
   const x = getPost(p.id); x.saves = x.saves.filter(u => u !== me.id); save(); send(res, 200, { saved: false });
 });
 route('GET', '/api/posts/:id/comments', true, async (req, res, b, me, p) => {
-  const x = getPost(p.id);
-  const list = Object.values(db.comments).filter(c => c.pid === x.id).sort((a, c) => a.created - c.created)
-    .map(c => ({ id: c.id, text: c.text, created: c.created, user: publicUser(db.users[c.uid]), canDelete: c.uid === me.id || x.uid === me.id }));
-  send(res, 200, { comments: list });
+  const x = viewPost(p.id, me);
+  const list = visibleComments(x, me).sort((a, c) => a.created - c.created)
+    .map(c => ({ id: c.id, text: c.text, created: c.created, user: publicUser(db.users[c.uid]), canDelete: c.uid === me.id || x.uid === me.id, hidden: !!(c.hidden || c.restricted) }));
+  send(res, 200, { comments: list, canComment: !commentBlockReason(x, me), note: commentBlockReason(x, me) });
 });
 route('POST', '/api/posts/:id/comments', true, async (req, res, b, me, p) => {
-  const x = getPost(p.id); const text = clean(b.text, 500); if (!text) throw httpErr(400, 'Comment is empty');
+  const x = viewPost(p.id, me); const text = clean(b.text, 500); if (!text) throw httpErr(400, 'Comment is empty');
+  const why = commentBlockReason(x, me); if (why) throw httpErr(403, why);
+  const owner = db.users[x.uid]; const words = settingsOf(owner).hiddenWords; const low = text.toLowerCase();
   const c = { id: id(), pid: x.id, uid: me.id, text, created: now() };
-  db.comments[c.id] = c; notify(x.uid, me.id, 'comment', { pid: x.id, text: text.slice(0, 80) }); save();
-  send(res, 201, { comment: { id: c.id, text, created: c.created, user: publicUser(me), canDelete: true } });
+  if (me.id !== owner.id && words.some(w => w && low.includes(w))) c.hidden = true;        // hidden words filter
+  if (L(owner).restricted.includes(me.id)) c.restricted = true;                             // restricted: only they (and the owner) see it
+  db.comments[c.id] = c;
+  if (!c.hidden && !c.restricted) { notify(x.uid, me.id, 'comment', { pid: x.id, text: text.slice(0, 80) }); handleMentions(text, me, { pid: x.id, text: text.slice(0, 80) }); }
+  save();
+  send(res, 201, { comment: { id: c.id, text, created: c.created, user: publicUser(me), canDelete: true, hidden: !!(c.hidden || c.restricted) } });
 });
 route('DELETE', '/api/comments/:id', true, async (req, res, b, me, p) => {
   const c = db.comments[p.id]; if (!c) throw httpErr(404, 'Comment not found');
@@ -361,29 +772,47 @@ route('DELETE', '/api/comments/:id', true, async (req, res, b, me, p) => {
   delete db.comments[c.id]; save(); send(res, 200, { ok: true });
 });
 
-// ---- stories
+// ================================================================ stories
 route('GET', '/api/stories', true, async (req, res, b, me) => {
-  const ids = [me.id].concat(following(me.id));
-  const tray = ids.map(i => db.users[i]).filter(u => u && activeStories(u.id).length)
-    .map(u => Object.assign(publicUser(u, me), { isMe: u.id === me.id, latest: activeStories(u.id).slice(-1)[0].created }));
+  const ids = [me.id].concat(following(me.id).filter(x => !L(me).mutedStories.includes(x)));
+  const tray = ids.map(i => db.users[i]).filter(u => u && (u.id === me.id || !gone(u)) && storiesFor(u.id, me).length)
+    .map(u => Object.assign(publicUser(u, me), { isMe: u.id === me.id, latest: storiesFor(u.id, me).slice(-1)[0].created }));
   const mine = tray.filter(x => x.isMe); const rest = tray.filter(x => !x.isMe).sort((a, c) => (a.storySeen - c.storySeen) || (c.latest - a.latest));
   send(res, 200, { tray: mine.concat(rest), meHasStory: mine.length > 0 });
 });
+function canReplyStory(owner, me) {
+  if (owner.id === me.id) return false;
+  const r = settingsOf(owner).storyReplies;
+  return r === 'everyone' || (r === 'following' && isFollowing(owner.id, me.id));
+}
 route('GET', '/api/stories/:username', true, async (req, res, b, me, p) => {
-  const u = userByName(p.username); if (!u) throw httpErr(404, 'User not found');
-  const list = activeStories(u.id).map(s => ({ id: s.id, media: mediaUrl(s.media), type: s.type, created: s.created, seen: s.seen.includes(me.id), viewers: u.id === me.id ? s.seen.filter(v => v !== me.id).map(v => publicUser(db.users[v])).filter(Boolean) : undefined }));
-  send(res, 200, { user: publicUser(u, me), stories: list });
+  const u = visibleUser(p.username, me);
+  const list = storiesFor(u.id, me).map(s => ({ id: s.id, media: mediaUrl(s.media), type: s.type, created: s.created, close: !!s.close, seen: s.seen.includes(me.id),
+    viewers: u.id === me.id ? s.seen.filter(v => v !== me.id).map(v => publicUser(db.users[v])).filter(Boolean) : undefined,
+    views: u.id === me.id ? s.seen.filter(v => v !== me.id).length + (s.bonusViews || 0) : undefined }));
+  send(res, 200, { user: publicUser(u, me), stories: list, canReply: canReplyStory(u, me) });
 });
 route('POST', '/api/stories', true, async (req, res, b, me) => {
   const m = storeMedia(b.media, me.id, ['image', 'video']);
-  const s = { id: id(), uid: me.id, media: m.file, type: m.kind, created: now(), seen: [] };
-  db.stories[s.id] = s; save(); send(res, 201, { story: { id: s.id, media: mediaUrl(s.media), created: s.created } });
+  const s = { id: id(), uid: me.id, media: m.file, type: m.kind, created: now(), seen: [], close: !!b.closeFriends };
+  db.stories[s.id] = s; save(); send(res, 201, { story: { id: s.id, media: mediaUrl(s.media), created: s.created, close: s.close } });
 });
+function liveStory(sid, me) {
+  const s = db.stories[sid]; if (!s || now() - s.created >= STORY_TTL) throw httpErr(404, 'Story not found');
+  if (!storyVisible(s, me)) throw httpErr(403, 'You cannot view this story');
+  return s;
+}
 route('POST', '/api/stories/:id/seen', true, async (req, res, b, me, p) => {
-  const s = db.stories[p.id]; if (!s || now() - s.created >= STORY_TTL) throw httpErr(404, 'Story not found');
-  if (s.uid !== me.id && !following(me.id).includes(s.uid)) throw httpErr(403, 'Follow to see this story');
+  const s = liveStory(p.id, me);
   if (!s.seen.includes(me.id)) { s.seen.push(me.id); save(); }
   send(res, 200, { ok: true });
+});
+route('POST', '/api/stories/:id/reply', true, async (req, res, b, me, p) => {
+  const s = liveStory(p.id, me); const owner = db.users[s.uid];
+  if (!canReplyStory(owner, me)) throw httpErr(403, owner.username + ' has turned off story replies');
+  const text = clean(b.text, 1000); if (!text) throw httpErr(400, 'Reply is empty');
+  const m = deliver(me, owner, { kind: 'text', text: '↩️ Replied to your story: ' + text }, true);
+  send(res, 201, { message: messageView(m, me) });
 });
 route('DELETE', '/api/stories/:id', true, async (req, res, b, me, p) => {
   const s = db.stories[p.id]; if (!s) throw httpErr(404, 'Story not found');
@@ -391,48 +820,100 @@ route('DELETE', '/api/stories/:id', true, async (req, res, b, me, p) => {
   dropMedia(s.media); delete db.stories[s.id]; save(); send(res, 200, { ok: true });
 });
 
-// ---- direct messages (a conversation is always "me + the other user", so nobody can address someone else's chat)
-route('GET', '/api/inbox', true, async (req, res, b, me) => {
+// ================================================================ direct messages
+// A conversation is always "me + the other user", so nobody can address someone else's chat.
+function pendingRequest(from, to) { return Object.values(db.messages).some(m => m.from === from && m.to === to && m.request && !m.deleted); }
+function acceptConv(a, b) { const key = convKey(a, b); db.accepted[key] = true; for (const m of Object.values(db.messages)) if (m.conv === key && m.request) m.request = false; save(); }
+// decides where a new message from `me` to `u` lands: 'inbox' or 'request'; throws if not allowed at all
+function dmLane(me, u, isStoryReply) {
+  if (blockedEither(me.id, u.id)) throw httpErr(403, "You can't message this account");
+  const key = convKey(me.id, u.id);
+  if (pendingRequest(u.id, me.id)) { acceptConv(me.id, u.id); return 'inbox'; }  // replying to a request accepts it
+  if (L(u).restricted.includes(me.id)) return 'request';                          // restricted people land in Requests
+  if (db.accepted[key] || isFollowing(u.id, me.id)) return 'inbox';               // they follow me / chat already accepted
+  const s = settingsOf(u);
+  if (s.dmFrom === 'everyone') return 'inbox';
+  if (s.dmFrom === 'followers' && isFollowing(me.id, u.id)) return 'inbox';
+  if (s.dmFrom === 'followers' || isStoryReply) return 'request';                 // strangers -> Message requests
+  throw httpErr(403, u.username + " isn't accepting messages");
+}
+function deliver(me, u, fields, isStoryReply) {
+  const lane = dmLane(me, u, isStoryReply);
+  const key = convKey(me.id, u.id);
+  if (lane === 'inbox') db.accepted[key] = true;
+  const m = Object.assign({ id: id(), conv: key, from: me.id, to: u.id, created: now(), seen: 0, request: lane === 'request' }, fields);
+  db.messages[m.id] = m; save();
+  push(u.id, { type: 'dm', from: me.username, request: m.request, quiet: !settingsOf(u).notif.messages, message: messageView(m, u) });
+  push(me.id, { type: 'dm_echo', to: u.username, message: messageView(m, me) });
+  return m;
+}
+const activeMsgs = (me) => Object.values(db.messages).filter(m => !m.deleted && (m.from === me.id || m.to === me.id) && !gone(db.users[m.from === me.id ? m.to : m.from]));
+function convList(me, requests) {
   const convs = new Map();
-  for (const m of Object.values(db.messages)) {
-    if (m.deleted || (m.from !== me.id && m.to !== me.id)) continue;
+  for (const m of activeMsgs(me)) {
+    const isReqForMe = m.request && m.to === me.id;
+    if (!!requests !== isReqForMe) continue;
     const other = m.from === me.id ? m.to : m.from;
     const c = convs.get(other) || { last: null, unread: 0 };
     if (!c.last || m.created > c.last.created) c.last = m;
     if (m.to === me.id && !m.seen) c.unread++;
     convs.set(other, c);
   }
-  const list = [...convs.entries()].filter(([o]) => db.users[o]).map(([o, c]) => ({ user: publicUser(db.users[o], me), last: messageView(c.last, me), unread: c.unread }))
+  return [...convs.entries()].filter(([o]) => db.users[o]).map(([o, c]) => ({ user: publicUser(db.users[o], me), last: messageView(c.last, me), unread: c.unread }))
     .sort((a, c) => c.last.created - a.last.created);
-  send(res, 200, { conversations: list });
+}
+route('GET', '/api/inbox', true, async (req, res, b, me) => {
+  const reqCount = convList(me, true).length;
+  send(res, 200, { conversations: convList(me, false), requests: reqCount });
 });
-function otherUser(name, me) { const u = userByName(name); if (!u) throw httpErr(404, 'User not found'); if (u.id === me.id) throw httpErr(400, "You can't message yourself"); return u; }
+route('GET', '/api/inbox/requests', true, async (req, res, b, me) => send(res, 200, { conversations: convList(me, true) }));
+function otherUser(name, me) { const u = visibleUser(name, me); if (u.id === me.id) throw httpErr(400, "You can't message yourself"); return u; }
+function markSeen(me, u) {
+  const key = convKey(me.id, u.id); let changed = false;
+  for (const m of Object.values(db.messages)) if (m.conv === key && m.to === me.id && !m.seen && !m.request) { m.seen = now(); changed = true; }
+  if (changed) { save(); if (readReceiptsOn(me) && !L(me).restricted.includes(u.id)) push(u.id, { type: 'seen', by: me.username }); }
+}
 route('GET', '/api/dm/:username', true, async (req, res, b, me, p) => {
   const u = otherUser(p.username, me); const key = convKey(me.id, u.id);
   const msgs = Object.values(db.messages).filter(m => m.conv === key && !m.deleted).sort((a, c) => a.created - c.created);
-  let changed = false; for (const m of msgs) if (m.to === me.id && !m.seen) { m.seen = now(); changed = true; }
-  if (changed) { save(); push(u.id, { type: 'seen', by: me.username }); }
-  send(res, 200, { user: Object.assign(publicUser(u, me), { online: streams.has(u.id) }), messages: msgs.slice(-200).map(m => messageView(m, me)) });
+  const isRequest = msgs.some(m => m.request && m.to === me.id);
+  if (!isRequest) markSeen(me, u); // opening a message request does not tell the sender you saw it
+  let canMessage = true, why = null;
+  if (blockedEither(me.id, u.id)) { canMessage = false; why = L(me).blocked.includes(u.id) ? 'You blocked this account' : "You can't message this account"; }
+  else if (!isRequest) { try { const s = settingsOf(u); if (!db.accepted[key] && !isFollowing(u.id, me.id) && s.dmFrom === 'nobody' && !pendingRequest(u.id, me.id)) { canMessage = false; why = u.username + " isn't accepting messages"; } } catch (e) {} }
+  send(res, 200, { user: Object.assign(publicUser(u, me), presence(u, me)), messages: msgs.slice(-200).map(m => messageView(m, me)), isRequest, canMessage, why });
 });
 route('POST', '/api/dm/:username', true, async (req, res, b, me, p) => {
-  const u = otherUser(p.username, me); const key = convKey(me.id, u.id);
-  const m = { id: id(), conv: key, from: me.id, to: u.id, created: now(), seen: 0 };
-  if (b.postId) { const post = getPost(String(b.postId)); m.kind = 'post'; m.postId = post.id; m.text = clean(b.text, 1000); }
-  else if (b.media) { m.kind = 'image'; m.media = storeMedia(b.media, me.id, ['image'], key).file; m.text = clean(b.text, 1000); }
-  else { m.kind = 'text'; m.text = clean(b.text, 2000); if (!m.text) throw httpErr(400, 'Message is empty'); }
-  db.messages[m.id] = m; save();
-  push(u.id, { type: 'dm', from: me.username, message: messageView(m, u) });
-  push(me.id, { type: 'dm_echo', to: u.username, message: messageView(m, me) });
-  send(res, 201, { message: messageView(m, me) });
+  const u = otherUser(p.username, me);
+  const fields = {};
+  if (b.postId) { const post = viewPost(String(b.postId), me); fields.kind = 'post'; fields.postId = post.id; fields.text = clean(b.text, 1000); }
+  else if (b.media) { fields.kind = 'image'; fields.text = clean(b.text, 1000); }
+  else { fields.kind = 'text'; fields.text = clean(b.text, 2000); if (!fields.text) throw httpErr(400, 'Message is empty'); }
+  dmLane(me, u); // permission check before storing any photo
+  if (b.media && !b.postId) fields.media = storeMedia(b.media, me.id, ['image'], convKey(me.id, u.id)).file;
+  const m = deliver(me, u, fields);
+  send(res, 201, { message: messageView(m, me), request: m.request });
+});
+route('POST', '/api/dm/:username/accept', true, async (req, res, b, me, p) => {
+  const u = otherUser(p.username, me); if (!pendingRequest(u.id, me.id)) throw httpErr(404, 'No message request from ' + u.username);
+  acceptConv(me.id, u.id); markSeen(me, u); send(res, 200, { ok: true });
+});
+route('DELETE', '/api/dm/:username/request', true, async (req, res, b, me, p) => {
+  const u = otherUser(p.username, me); let n = 0;
+  for (const m of Object.values(db.messages)) if (m.from === u.id && m.to === me.id && m.request) { dropMedia(m.media); delete db.messages[m.id]; n++; }
+  if (!n) throw httpErr(404, 'No message request from ' + u.username);
+  save(); send(res, 200, { ok: true, deleted: n });
 });
 route('POST', '/api/dm/:username/typing', true, async (req, res, b, me, p) => {
-  const u = otherUser(p.username, me); push(u.id, { type: 'typing', from: me.username }); send(res, 200, { ok: true });
+  const u = otherUser(p.username, me);
+  if (blockedEither(me.id, u.id)) throw httpErr(403, "You can't message this account");
+  const key = convKey(me.id, u.id);
+  // typing indicator: only if I allow it, and only inside an accepted chat
+  if (settingsOf(me).typing && (db.accepted[key] || isFollowing(u.id, me.id)) && !L(u).restricted.includes(me.id)) push(u.id, { type: 'typing', from: me.username });
+  send(res, 200, { ok: true });
 });
 route('POST', '/api/dm/:username/seen', true, async (req, res, b, me, p) => {
-  const u = otherUser(p.username, me); const key = convKey(me.id, u.id); let changed = false;
-  for (const m of Object.values(db.messages)) if (m.conv === key && m.to === me.id && !m.seen) { m.seen = now(); changed = true; }
-  if (changed) { save(); push(u.id, { type: 'seen', by: me.username }); }
-  send(res, 200, { ok: true });
+  const u = otherUser(p.username, me); markSeen(me, u); send(res, 200, { ok: true });
 });
 route('GET', '/api/messages/:id', true, async (req, res, b, me, p) => {
   const m = db.messages[p.id];
@@ -447,32 +928,130 @@ route('DELETE', '/api/messages/:id', true, async (req, res, b, me, p) => {
   push(m.to, { type: 'unsend', id: m.id, from: me.username }); send(res, 200, { ok: true });
 });
 
-// ---- notifications
+// ================================================================ notifications
 route('GET', '/api/notifications', true, async (req, res, b, me) => {
-  const list = Object.values(db.notifs).filter(n => n.to === me.id && db.users[n.from]).sort((a, c) => c.created - a.created).slice(0, 60)
-    .map(n => { const pst = n.pid && db.posts[n.pid]; return { id: n.id, type: n.type, created: n.created, read: n.read, text: n.text || '', user: Object.assign(publicUser(db.users[n.from], me), { isFollowing: following(me.id).includes(n.from) }), post: pst ? { id: pst.id, media: mediaUrl(pst.media), type: pst.type } : null }; });
-  send(res, 200, { notifications: list });
+  const list = Object.values(db.notifs).filter(n => n.to === me.id && db.users[n.from] && !gone(db.users[n.from]) && !blockedEither(me.id, n.from)).sort((a, c) => c.created - a.created).slice(0, 60)
+    .map(n => { const pst = n.pid && db.posts[n.pid]; return { id: n.id, type: n.type, created: n.created, read: n.read, text: n.text || '', user: Object.assign(publicUser(db.users[n.from], me), { isFollowing: isFollowing(me.id, n.from), requested: (db.requests[n.from] || []).includes(me.id) }), post: pst && canView(me, db.users[pst.uid]) ? { id: pst.id, media: mediaUrl(pst.media), type: pst.type } : null }; });
+  send(res, 200, { notifications: list, followRequests: (db.requests[me.id] || []).filter(i => db.users[i] && !gone(db.users[i])).length });
 });
 route('POST', '/api/notifications/read', true, async (req, res, b, me) => {
   for (const n of Object.values(db.notifs)) if (n.to === me.id) n.read = true; save(); send(res, 200, { ok: true });
 });
 
-// ---- realtime stream
+// ================================================================ admin (hidden panel; every route checks the role on the server)
+const ADMIN_UNLOCK_MS = 30 * 60 * 1000;
+function requireAdmin(req, me) {
+  if (!me || !me.admin) throw httpErr(403, 'Admins only');
+  const s = db.sessions[req.sessKey];
+  if (!s || !s.adminUntil || s.adminUntil < now()) throw httpErr(401, 'Admin panel locked — confirm your password');
+}
+route('POST', '/api/admin/unlock', true, async (req, res, b, me) => {
+  if (!me.admin) throw httpErr(403, 'Admins only');
+  if (tooMany('adminunlock:' + me.id, 8, false)) throw httpErr(429, 'Too many tries, wait 10 minutes');
+  if (!checkPassword(me, String(b.password || ''))) { tooMany('adminunlock:' + me.id, 8); throw httpErr(401, 'Wrong password'); }
+  db.sessions[req.sessKey].adminUntil = now() + ADMIN_UNLOCK_MS; save();
+  send(res, 200, { ok: true, until: db.sessions[req.sessKey].adminUntil });
+});
+const adminRoute = (method, pattern, fn) => route(method, pattern, true, async (req, res, b, me, p, q) => { requireAdmin(req, me); return fn(req, res, b, me, p, q); });
+adminRoute('GET', '/api/admin/stats', async (req, res) => {
+  const t = now();
+  send(res, 200, { stats: {
+    users: Object.keys(db.users).length, activeToday: Object.values(db.users).filter(u => u.lastActive && t - u.lastActive < 864e5).length, onlineNow: streams.size,
+    posts: Object.values(db.posts).filter(p => p.type === 'image').length, reels: Object.values(db.posts).filter(p => p.type === 'video').length,
+    stories: Object.values(db.stories).filter(s => t - s.created < STORY_TTL).length, comments: Object.keys(db.comments).length,
+    messages: Object.values(db.messages).filter(m => !m.deleted).length, likes: Object.values(db.posts).reduce((a, p) => a + p.likes.length, 0),
+    privateAccounts: Object.values(db.users).filter(u => settingsOf(u).private).length, suspended: Object.values(db.users).filter(u => u.suspended).length,
+  }, version: VERSION });
+});
+function adminUser(u) {
+  return { id: u.id, username: u.username, name: u.name, avatar: mediaUrl(u.avatar), verified: !!u.verified, admin: !!u.admin, demo: !!u.demo, suspended: !!u.suspended, deactivated: !!u.deactivated,
+    created: u.created, lastActive: u.lastActive || null, posts: Object.values(db.posts).filter(p => p.uid === u.id).length,
+    realFollowers: followers(u.id).length, bonusFollowers: u.bonusFollowers || 0, shownFollowers: followerCount(u), following: following(u.id).length, private: settingsOf(u).private };
+}
+adminRoute('GET', '/api/admin/users', async (req, res, b, me, p, q) => {
+  const s = clean(q.get('q'), 30).toLowerCase();
+  let list = Object.values(db.users); if (s) list = list.filter(u => u.username.includes(s) || (u.name || '').toLowerCase().includes(s));
+  send(res, 200, { users: list.sort((a, c) => c.created - a.created).slice(0, 200).map(adminUser) });
+});
+const adminTarget = (name) => { const u = userByName(name); if (!u) throw httpErr(404, 'User not found'); return u; };
+const boostNum = (v, cur) => { const n = Number(v); if (!Number.isFinite(n) || Math.abs(n) > 1e8) throw httpErr(400, 'Enter a number'); return Math.max(0, Math.round(n)); };
+adminRoute('PUT', '/api/admin/users/:username', async (req, res, b, me, p) => {
+  const u = adminTarget(p.username);
+  if (b.verified !== undefined) u.verified = !!b.verified;
+  if (b.bonusFollowers !== undefined) u.bonusFollowers = boostNum(b.bonusFollowers);           // set
+  if (b.addFollowers !== undefined) u.bonusFollowers = boostNum((u.bonusFollowers || 0) + Number(b.addFollowers)); // add
+  if (b.suspended !== undefined) {
+    if (u.admin && b.suspended) throw httpErr(400, 'An admin cannot be suspended');
+    u.suspended = !!b.suspended; if (u.suspended) { killSessions(u.id); closeStreams(u.id); }
+  }
+  save(); send(res, 200, { user: adminUser(u) });
+});
+adminRoute('DELETE', '/api/admin/users/:username', async (req, res, b, me, p) => {
+  const u = adminTarget(p.username); if (u.admin) throw httpErr(400, 'An admin cannot be deleted');
+  deleteUserData(u); send(res, 200, { ok: true });
+});
+function adminPost(x) {
+  return { id: x.id, type: x.type, media: mediaUrl(x.media), caption: x.caption.slice(0, 120), created: x.created, user: db.users[x.uid] ? db.users[x.uid].username : '?',
+    realLikes: x.likes.length, bonusLikes: x.bonusLikes || 0, realComments: Object.values(db.comments).filter(c => c.pid === x.id).length, bonusComments: x.bonusComments || 0,
+    realViews: (x.views || []).length, bonusViews: x.bonusViews || 0 };
+}
+adminRoute('GET', '/api/admin/posts', async (req, res, b, me, p, q) => {
+  const user = clean(q.get('user'), 30).toLowerCase(); const u = user ? userByName(user) : null;
+  let list = Object.values(db.posts); if (user) list = list.filter(x => u && x.uid === u.id);
+  send(res, 200, { posts: list.sort((a, c) => c.created - a.created).slice(0, 100).map(adminPost) });
+});
+adminRoute('PUT', '/api/admin/posts/:id', async (req, res, b, me, p) => {
+  const x = getPost(p.id);
+  for (const k of ['Likes', 'Comments', 'Views']) {
+    if (b['bonus' + k] !== undefined) x['bonus' + k] = boostNum(b['bonus' + k]);
+    if (b['add' + k] !== undefined) x['bonus' + k] = boostNum((x['bonus' + k] || 0) + Number(b['add' + k]));
+  }
+  save(); send(res, 200, { post: adminPost(x) });
+});
+adminRoute('POST', '/api/admin/reset-boosts', async (req, res, b) => { // all boosts, or one user's (b.username)
+  const u = b.username ? adminTarget(String(b.username)) : null;
+  for (const x of Object.values(db.users)) if (!u || x.id === u.id) delete x.bonusFollowers;
+  for (const x of Object.values(db.posts)) if (!u || x.uid === u.id) { delete x.bonusLikes; delete x.bonusComments; delete x.bonusViews; }
+  for (const x of Object.values(db.stories)) if (!u || x.uid === u.id) delete x.bonusViews;
+  save(); send(res, 200, { ok: true });
+});
+adminRoute('GET', '/api/admin/stories', async (req, res) => {
+  const t = now();
+  send(res, 200, { stories: Object.values(db.stories).filter(s => t - s.created < STORY_TTL).sort((a, c) => c.created - a.created).slice(0, 100)
+    .map(s => ({ id: s.id, media: mediaUrl(s.media), type: s.type, created: s.created, user: db.users[s.uid] ? db.users[s.uid].username : '?', realViews: s.seen.length, bonusViews: s.bonusViews || 0, close: !!s.close })) });
+});
+adminRoute('PUT', '/api/admin/stories/:id', async (req, res, b, me, p) => {
+  const s = db.stories[p.id]; if (!s) throw httpErr(404, 'Story not found');
+  if (b.bonusViews !== undefined) s.bonusViews = boostNum(b.bonusViews);
+  if (b.addViews !== undefined) s.bonusViews = boostNum((s.bonusViews || 0) + Number(b.addViews));
+  save(); send(res, 200, { ok: true, bonusViews: s.bonusViews || 0 });
+});
+adminRoute('DELETE', '/api/admin/posts/:id', async (req, res, b, me, p) => { removePost(getPost(p.id)); send(res, 200, { ok: true }); });
+adminRoute('GET', '/api/admin/comments', async (req, res, b, me, p, q) => {
+  const pid = clean(q.get('post'), 40);
+  let list = Object.values(db.comments); if (pid) list = list.filter(c => c.pid === pid);
+  send(res, 200, { comments: list.sort((a, c) => c.created - a.created).slice(0, 100).map(c => ({ id: c.id, text: c.text, created: c.created, post: c.pid, user: db.users[c.uid] ? db.users[c.uid].username : '?', hidden: !!(c.hidden || c.restricted) })) });
+});
+adminRoute('DELETE', '/api/admin/comments/:id', async (req, res, b, me, p) => {
+  const c = db.comments[p.id]; if (!c) throw httpErr(404, 'Comment not found'); delete db.comments[c.id]; save(); send(res, 200, { ok: true });
+});
+
+// ================================================================ realtime stream
 route('GET', '/api/stream', true, async (req, res, b, me) => {
   res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', 'Connection': 'keep-alive', 'X-Accel-Buffering': 'no' });
   res.write(': ' + ' '.repeat(2048) + '\n\n');
   res.write('data: {"type":"hello"}\n\n');
   let set = streams.get(me.id); if (!set) streams.set(me.id, set = new Set());
   set.add(res);
-  req.on('close', () => { set.delete(res); if (!set.size) streams.delete(me.id); });
+  req.on('close', () => { set.delete(res); if (!set.size) streams.delete(me.id); if (db.users[me.id]) { db.users[me.id].lastActive = now(); save(); } });
   return 'stream';
 });
 
 // ---------------------------------------------------------------- server
 const server = http.createServer(async (req, res) => {
   for (const [k, v] of Object.entries(SEC_HEADERS)) res.setHeader(k, v);
-  const url = new URL(req.url, 'http://x');
-  const pathname = decodeURIComponent(url.pathname);
+  let url, pathname;
+  try { url = new URL(req.url, 'http://x'); pathname = decodeURIComponent(url.pathname); } catch (e) { res.writeHead(400); return res.end(); }
   try {
     if (pathname.startsWith('/api/')) {
       const r = routes.find(r => r.method === req.method && r.re.test(pathname));
@@ -494,11 +1073,12 @@ const server = http.createServer(async (req, res) => {
       const me = sessionUser(req);
       if (!me) return deny(401, 'Please log in');
       const meta = db.media[file];
-      if (meta.conv && !meta.conv.split(':').includes(me.id)) return deny(404, 'Not found'); // DM photos: only the two people in that chat
+      if (meta.conv) { if (!meta.conv.split(':').includes(me.id)) return deny(404, 'Not found'); } // DM photos: only the two people in that chat
+      else if (!mediaAllowed(file, meta, me, req)) return deny(403, 'This account is private');      // private accounts / close friends / blocks
       res.setHeader('Vary', 'Cookie');
-      return serveFile(req, res, path.join(MEDIA_DIR, file), MIME[file.split('.').pop()], 'private, max-age=86400');
+      return serveFile(req, res, path.join(MEDIA_DIR, file), MIME[file.split('.').pop()], 'private, max-age=3600');
     }
-    if (pathname === '/healthz') return send(res, 200, { ok: true, users: Object.keys(db.users).length, posts: Object.keys(db.posts).length });
+    if (pathname === '/healthz') return send(res, 200, { ok: true, app: APP_NAME, version: VERSION, users: Object.keys(db.users).length, posts: Object.keys(db.posts).length });
     // static files
     let f = path.normalize(path.join(PUBLIC_DIR, pathname));
     if (!f.startsWith(PUBLIC_DIR)) { res.writeHead(400); return res.end(); }
@@ -519,8 +1099,22 @@ setInterval(() => {
   if (n) save();
 }, 10 * 60 * 1000).unref();
 
-module.exports = { db, save, storeMedia, hashPassword, id, server, STORY_TTL, MEDIA_DIR };
+// admin bootstrap: ADMIN_BOOTSTRAP = JSON {username, salt, pass} (a password HASH, never the password) from the deploy, not the repo
+function bootstrapAdmin() {
+  let a; try { a = JSON.parse(process.env.ADMIN_BOOTSTRAP || 'null'); } catch (e) { console.error('bad ADMIN_BOOTSTRAP'); }
+  if (!a || !a.username || !a.salt || !a.pass) return;
+  let u = userByName(a.username);
+  if (!u) {
+    u = { id: id(), username: a.username, name: a.name || a.username, bio: '', avatar: null, salt: a.salt, pass: a.pass, created: now(), logins: [], admin: true, bootstrapped: true };
+    settingsOf(u); L(u); db.users[u.id] = u; db.follows[u.id] = []; console.log('admin account created:', a.username);
+  } else if (u.bootstrapped && a.resetPassword) { u.salt = a.salt; u.pass = a.pass; }
+  u.admin = true; u.suspended = false; save();
+}
+
+module.exports = { db, save, storeMedia, hashPassword, id, server, STORY_TTL, MEDIA_DIR, deleteUserData, settingsOf, L, migrate };
 if (require.main === module || process.env.START_SERVER) {
+  migrate();
   try { require('./seed.js').run(module.exports); } catch (e) { console.error('seed skipped:', e.message); }
-  server.listen(PORT, () => console.log('InstaGlass running on http://localhost:' + PORT + '  data: ' + DATA_DIR));
+  bootstrapAdmin();
+  server.listen(PORT, () => console.log(APP_NAME + ' v' + VERSION + ' running on http://localhost:' + PORT + '  data: ' + DATA_DIR));
 }

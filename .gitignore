@@ -7,3 +7,5 @@ android/native/
 android/node_modules/
 *.jks
 keystore.properties
+admin-bootstrap.json
+*admin*.txt

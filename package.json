@@ -1,7 +1,7 @@
 {
   "name": "instaglass",
-  "version": "1.0.0",
-  "description": "InstaGlass \u2014 liquid glass Instagram-style social app (posts, stories, reels, likes, comments, real-time DMs). Zero-dependency Node.js. Educational project by Tech Bro Z.",
+  "version": "1.1.0",
+  "description": "Private Insta (InstaGlass) — liquid glass Instagram-style social app: private accounts, follow requests, Close Friends, block/restrict/mute, message requests, posts, stories, reels, real-time DMs. Zero-dependency Node.js. Educational project by Tech Bro Z.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -11,12 +11,15 @@
     "node": ">=18"
   },
   "keywords": [
+    "close-friends",
     "instagram-clone",
-    "social-media",
     "liquid-glass",
     "nodejs",
-    "sse",
+    "privacy-settings",
+    "private-account",
     "realtime-chat",
+    "social-media",
+    "sse",
     "stories"
   ],
   "author": "Tech Bro Z (YouTube @techbrozdeveloper)",

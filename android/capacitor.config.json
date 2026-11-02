@@ -1,6 +1,6 @@
 {
   "appId": "com.techbroz.instaglass",
-  "appName": "InstaGlass",
+  "appName": "Private Insta",
   "webDir": "www",
   "android": {
     "path": "native",
